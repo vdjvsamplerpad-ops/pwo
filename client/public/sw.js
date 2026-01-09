@@ -1,11 +1,10 @@
 
-const CACHE_NAME = 'vdjv-sampler-cache-v1';
+const CACHE_NAME = 'vdjv-sampler-cache-v2';
 const urlsToCache = [
-  '/',
-  '/index.html',
-  '/site.webmanifest',
-  '/assets/logo.png',
-  // Add other static assets that should be cached
+  './',
+  './index.html',
+  './site.webmanifest',
+  './assets/logo.png',
 ];
 
 self.addEventListener('install', (event) => {
