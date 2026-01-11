@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { ProgressDialog } from '@/components/ui/progress-dialog';
-import { Plus, Settings, Upload, X, Crown, Minus, RotateCcw, Sun, Moon, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Settings, Upload, X, Crown, Minus, RotateCcw, Sun, Moon, ChevronUp, ChevronDown, Loader2 } from 'lucide-react';
 import { SamplerBank, StopMode, PadData } from './types/sampler';
 import { BankEditDialog } from './BankEditDialog';
 
@@ -45,7 +45,7 @@ interface SideMenuProps {
   onMoveBankDown: (id: string) => void;
   onTransferPad: (padId: string, sourceBankId: string, targetBankId: string) => void;
   canTransferFromBank?: (bankId: string) => boolean;
-  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, onProgress?: (progress: number) => void) => Promise<void>;
 }
 
 export function SideMenu({
@@ -85,6 +85,8 @@ export function SideMenu({
   const [newBankName, setNewBankName] = React.useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   const [bankToDelete, setBankToDelete] = React.useState<SamplerBank | null>(null);
+  
+  // Progress State
   const [showExportProgress, setShowExportProgress] = React.useState(false);
   const [showImportProgress, setShowImportProgress] = React.useState(false);
   const [exportProgress, setExportProgress] = React.useState(0);
@@ -94,10 +96,26 @@ export function SideMenu({
   const [exportError, setExportError] = React.useState<string>('');
   const [importError, setImportError] = React.useState<string>('');
   const [dragOverBankId, setDragOverBankId] = React.useState<string | null>(null);
+  
+  // ETA Calculation State
+  const [importStartTime, setImportStartTime] = React.useState<number>(0);
+  const [importEta, setImportEta] = React.useState<number | null>(null);
+
+  // Loading State
+  const [isLoadingBanks, setIsLoadingBanks] = React.useState(true);
+
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const isMobile = windowWidth < 768;
   const maxPadSize = isMobile ? 6 : 14;
+
+  // Manage loading state - CHANGED
+  // We removed the timeout. It will now keep loading indefinitely until at least one bank is detected.
+  React.useEffect(() => {
+    if (banks.length > 0) {
+      setIsLoadingBanks(false);
+    }
+  }, [banks]);
 
   // Sort banks by sortOrder
   const sortedBanks = React.useMemo(() => {
@@ -160,6 +178,10 @@ export function SideMenu({
       setImportStatus('loading');
       setImportProgress(0);
       setImportError('');
+      
+      // Reset ETA calculation
+      setImportStartTime(Date.now());
+      setImportEta(null);
 
       try {
         await onImportBank(file, (progress) => {
@@ -177,6 +199,59 @@ export function SideMenu({
       }
     }
   };
+
+  // ETA Calculation Effect
+  React.useEffect(() => {
+    let interval: NodeJS.Timeout;
+
+    if (showImportProgress && importStatus === 'loading' && importProgress > 0 && importProgress < 100) {
+      
+      const calculateEta = () => {
+        const now = Date.now();
+        const elapsedSeconds = (now - importStartTime) / 1000;
+        
+        // Rate = percent per second
+        const rate = importProgress / elapsedSeconds;
+        
+        if (rate > 0) {
+          const remainingPercent = 100 - importProgress;
+          let estimatedSeconds = remainingPercent / rate;
+
+          // "Smart Floor" Logic
+          if (estimatedSeconds < 3 && importProgress < 98) {
+             estimatedSeconds = 5; 
+          }
+
+          setImportEta(estimatedSeconds);
+        }
+      };
+
+      // Run calculation immediately
+      calculateEta();
+      // Recalculate every 1 second
+      interval = setInterval(calculateEta, 1000);
+
+    } else if (importStatus !== 'loading') {
+      setImportEta(null);
+    }
+
+    return () => clearInterval(interval);
+  }, [importProgress, showImportProgress, importStatus, importStartTime]);
+
+  const getImportPhaseInfo = () => {
+    if (importProgress < 20) {
+      return {
+        message: "Verifying your purchase...",
+        showWarning: true
+      };
+    }
+    return {
+      message: "Extracting and processing audio files and images...",
+      showWarning: false
+    };
+  };
+
+  const importPhase = getImportPhaseInfo();
 
   const handleExportBank = async (bankId: string) => {
     setShowExportProgress(true);
@@ -198,7 +273,6 @@ export function SideMenu({
 
   const handlePadSizeIncrease = React.useCallback(() => {
     let newSize = padSize + 1;
-    // In dual mode, ensure even numbers for proper splitting
     if (isDualMode && newSize % 2 !== 0 && newSize < maxPadSize) {
       newSize = newSize + 1;
     }
@@ -209,7 +283,6 @@ export function SideMenu({
 
   const handlePadSizeDecrease = React.useCallback(() => {
     let newSize = padSize - 1;
-    // In dual mode, ensure even numbers for proper splitting
     if (isDualMode && newSize % 2 !== 0 && newSize > 1) {
       newSize = newSize - 1;
     }
@@ -224,7 +297,6 @@ export function SideMenu({
     e.preventDefault();
     e.stopPropagation();
 
-    // Try both data formats for better compatibility
     let data = e.dataTransfer.getData('application/json');
     if (!data) {
       data = e.dataTransfer.getData('text/plain');
@@ -237,7 +309,6 @@ export function SideMenu({
       console.log('Drag over bank:', bankId, 'with data:', dragData);
 
       if (dragData.type === 'pad-transfer' && dragData.sourceBankId !== bankId) {
-        // Check if source bank allows transfers
         if (canTransferFrom(dragData.sourceBankId)) {
           setDragOverBankId(bankId);
         }
@@ -254,7 +325,6 @@ export function SideMenu({
     e.stopPropagation();
     setDragOverBankId(null);
 
-    // Try both data formats for better compatibility
     let data = e.dataTransfer.getData('application/json');
     if (!data) {
       data = e.dataTransfer.getData('text/plain');
@@ -270,7 +340,6 @@ export function SideMenu({
       console.log('Drop on bank:', targetBankId, 'with data:', dragData);
 
       if (dragData.type === 'pad-transfer' && dragData.sourceBankId !== targetBankId) {
-        // Check if source bank allows transfers
         if (canTransferFrom(dragData.sourceBankId)) {
           console.log('Executing pad transfer:', dragData.pad.id, 'from', dragData.sourceBankId, 'to', targetBankId);
           onTransferPad(dragData.pad.id, dragData.sourceBankId, targetBankId);
@@ -282,18 +351,9 @@ export function SideMenu({
   };
 
   const handleBankDragLeave = (e: React.DragEvent) => {
-    // Only clear drag over if we're actually leaving the bank element
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setDragOverBankId(null);
     }
-  };
-
-  const formatDate = (date: Date) => {
-    return new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    }).format(date);
   };
 
   const getBankStatus = (bankId: string) => {
@@ -306,27 +366,17 @@ export function SideMenu({
   const canMoveUp = (bankIndex: number) => bankIndex > 0;
   const canMoveDown = (bankIndex: number) => bankIndex < sortedBanks.length - 1;
 
-  // Function to determine text color based on background color
   const getTextColorForBackground = (backgroundColor: string) => {
-    // Convert hex to RGB
     const hex = backgroundColor.replace('#', '');
     const r = parseInt(hex.substr(0, 2), 16);
     const g = parseInt(hex.substr(2, 2), 16);
     const b = parseInt(hex.substr(4, 2), 16);
-    
-    // Calculate luminance
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    
-    // Return white for dark backgrounds, black for light backgrounds
     return luminance > 0.5 ? '#000000' : '#ffffff';
   };
 
-  // Check if a bank can accept drops (including active dual mode banks)
-  const canAcceptDrop = (bankId: string) => {
-    return true; // All banks can accept drops, including active dual mode banks
-  };
+  const canAcceptDrop = (bankId: string) => true;
 
-  // Check if a bank can be used as source for transfers
   const canTransferFrom = (bankId: string) => {
     return canTransferFromBank ? canTransferFromBank(bankId) : true;
   };
@@ -339,12 +389,10 @@ export function SideMenu({
           : 'bg-white border-gray-200'
           } ${open ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        {/* Header */}
         <div
           className={`flex items-center justify-between p-2 border-b ${theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
             }`}
         >
-          {/* Theme Toggle */}
           <div className="space-y-2">
             <Button
               onClick={onToggleTheme}
@@ -381,11 +429,7 @@ export function SideMenu({
         </div>
 
         <div className="p-2 max-h-[calc(100vh-80px)] overflow-y-auto">
-
-
-          {/* Top Controls: Pad Size + Stop Mode */}
           <div className="grid grid-cols-2 gap-2 mb-1">
-            {/* Pad Size Controls */}
             <div className="space-y-2">
               <Label
                 className={`font-medium ${theme === 'dark' ? 'text-white' : 'text-gray-900'
@@ -427,7 +471,6 @@ export function SideMenu({
               </div>
             </div>
 
-            {/* Stop Mode Control */}
             <div className="space-y-2">
               <Label
                 className={`font-medium ${theme === 'dark' ? 'text-white' : 'text-gray-900'
@@ -482,14 +525,13 @@ export function SideMenu({
             </div>
           </div>
 
-          {/* Edit mode notice */}
           {editMode && (
             <div className={`mb-1 p-2 rounded-lg border ${theme === 'dark'
               ? 'bg-orange-900 border-orange-600 text-orange-300'
               : 'bg-orange-50 border-orange-300 text-orange-700'
               }`}>
               <p className="text-xs text-center font-medium">
-                🎯 Drag pads to ANY bank
+                🎯 Drag sampler to your bank
               </p>
             </div>
           )}
@@ -503,7 +545,13 @@ export function SideMenu({
           />
 
           <div className="space-y-2">
-            {sortedBanks.map((bank, index) => {
+            {isLoadingBanks && sortedBanks.length === 0 ? (
+              <div className={`flex flex-col gap-2 p-8 items-center justify-center ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'
+                }`}>
+                <Loader2 className="w-6 h-6 animate-spin" />
+                <span className="text-sm">Loading banks...</span>
+              </div>
+            ) : sortedBanks.map((bank, index) => {
               const status = getBankStatus(bank.id);
               const isPrimary = status === 'primary';
               const isSecondary = status === 'secondary';
@@ -567,7 +615,6 @@ export function SideMenu({
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
-                      {/* Bank order controls */}
                       <div className="flex flex-col gap-0">
                         <Button
                           variant="ghost"
@@ -603,7 +650,6 @@ export function SideMenu({
                         </Button>
                       </div>
 
-                      {/* Primary button */}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -648,7 +694,6 @@ export function SideMenu({
         </div>
       </div>
 
-      {/* Create Bank Dialog */}
       <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
         <DialogContent className={`${theme === 'dark' ? 'bg-gray-800' : 'bg-white'
           }`} aria-describedby={undefined}>
@@ -686,7 +731,6 @@ export function SideMenu({
         </DialogContent>
       </Dialog>
 
-      {/* Bank Edit Dialog */}
       {editingBank && (
         <BankEditDialog
           bank={editingBank}
@@ -709,7 +753,6 @@ export function SideMenu({
         />
       )}
 
-      {/* Delete Confirmation Dialog */}
       <ConfirmationDialog
         open={showDeleteConfirm}
         onOpenChange={setShowDeleteConfirm}
@@ -721,7 +764,6 @@ export function SideMenu({
         theme={theme}
       />
 
-      {/* Export Progress Dialog */}
       <ProgressDialog
         open={showExportProgress}
         onOpenChange={setShowExportProgress}
@@ -739,17 +781,19 @@ export function SideMenu({
         }}
       />
 
-      {/* Import Progress Dialog */}
       <ProgressDialog
         open={showImportProgress}
         onOpenChange={setShowImportProgress}
         title="Importing Bank"
-        description="Extracting and processing audio files and images..."
+        description=""
         progress={importProgress}
         status={importStatus}
         type="import"
         theme={theme}
         errorMessage={importError}
+        statusMessage={importPhase.message}
+        etaSeconds={importEta}
+        showWarning={importPhase.showWarning}
         onRetry={() => {
           handleImportClick();
         }}

@@ -136,12 +136,6 @@ export function SamplerPad({
       return;
     }
 
-    // Check if this bank allows transfers
-    if (canTransferFromBank && !canTransferFromBank(bankId)) {
-      e.preventDefault();
-      return;
-    }
-
     setIsDragging(true);
     e.dataTransfer.effectAllowed = 'move';
 
@@ -153,7 +147,7 @@ export function SamplerPad({
     };
 
     e.dataTransfer.setData('application/json', JSON.stringify(transferData));
-    e.dataTransfer.setData('text/plain', JSON.stringify(transferData)); // Fallback
+    e.dataTransfer.setData('text/plain', JSON.stringify(transferData));
 
     console.log('Drag started for pad:', pad.id, 'from bank:', bankId);
 
@@ -214,33 +208,28 @@ export function SamplerPad({
     setImageError(false);
   };
 
-  const truncateText = (text: string, maxLength: number) => {
-    if (text.length <= maxLength) return text;
-    return text.slice(0, maxLength) + '...';
-  };
-
   const getTextProps = () => {
     let textSize = 'text-sm';
-    let maxLength = 12;
+    let lineClamp = 'line-clamp-2';
 
     if (padSize <= 2) {
       textSize = 'text-lg';
-      maxLength = 24;
+      lineClamp = 'line-clamp-4';
     } else if (padSize <= 6) {
       textSize = 'text-base';
-      maxLength = 18;
-    } else if (padSize <= 8) {
+      lineClamp = 'line-clamp-3';
+    } else if (padSize <= 10) {
       textSize = 'text-sm';
-      maxLength = 12;
+      lineClamp = 'line-clamp-2';
     } else {
-      textSize = 'text-xs';
-      maxLength = 6;
+      textSize = 'text-[10px]'; // Smaller for very dense grids
+      lineClamp = 'line-clamp-2';
     }
 
-    return { textSize, maxLength };
+    return { textSize, lineClamp };
   };
 
-  const { textSize, maxLength } = getTextProps();
+  const { textSize, lineClamp } = getTextProps();
 
   const getButtonOpacity = () => {
     if (pad.triggerMode === 'unmute' && isPlaying) {
@@ -263,7 +252,7 @@ export function SamplerPad({
   };
 
   const getEditModeButtonClasses = () => {
-    return editMode ? 'pad-shake' : '';
+    return editMode ? '' : '';
   };
 
   const getEditModeButtonStyle = () => {
@@ -307,15 +296,17 @@ export function SamplerPad({
         draggable={editMode}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        // Added title for native browser tooltip on hover (shows full name)
+        title={shouldShowText ? pad.name : undefined}
         className={`
-          w-full h-full min-h-[80px] font-bold border-2 transition-all duration-300 transform relative overflow-hidden select-none
+          w-full h-full min-h-[80px] font-bold border-2 transition-colors duration-150 relative overflow-hidden select-none
           ${getButtonOpacity()} ${getEditModeClasses()} ${getEditModeButtonClasses()}
-          ${isDragging ? 'z-50 scale-105' : ''}
+          ${isDragging ? 'z-50' : ''}
           ${isPlaying
-            ? 'scale-95 bg-green-400 border-green-300 text-white'
+            ? 'bg-green-400 border-green-300 text-white'
             : theme === 'dark'
-              ? 'bg-gray-700 border-gray-600 hover:bg-gray-600 hover:border-gray-500 active:scale-95 text-white'
-              : 'bg-white border-gray-300 hover:bg-gray-100 hover:border-gray-400 active:scale-95 text-gray-900'
+              ? 'bg-gray-700 border-gray-600 hover:bg-gray-600 hover:border-gray-500 text-white'
+              : 'bg-white border-gray-300 hover:bg-gray-100 hover:border-gray-400 text-gray-900'
           }
         `}
         style={{
@@ -323,7 +314,7 @@ export function SamplerPad({
           ...getEditModeButtonStyle()
         }}
       >
-        {/* Drag/Transfer indicator for edit mode - NOT a button to avoid nesting */}
+        {/* Drag/Transfer indicator for edit mode */}
         {editMode && (
           <div
             onClick={handleTransferClick}
@@ -355,7 +346,7 @@ export function SamplerPad({
           {getTriggerModeIcon()}
         </div>
 
-        <div className="flex flex-col items-center justify-center h-full w-full pointer-events-none p-2">
+        <div className="flex flex-col items-center justify-center h-full w-full pointer-events-none p-2 overflow-hidden">
           {shouldShowImage ? (
             <div className="relative w-full max-w-[100%] aspect-square mb-1">
               <img
@@ -367,17 +358,25 @@ export function SamplerPad({
               />
             </div>
           ) : shouldShowText ? (
-            <span className={`text-center font-bold leading-tight mb-1 ${textSize} ${isPlaying
-              ? 'text-white'
-              : theme === 'dark'
+            /* UPDATED TEXT RENDERING:
+               - whitespace-normal: Allows text to wrap naturally
+               - break-words: Breaks long strings (like "KickDrum001")
+               - line-clamp-x: Limits lines to keep layout clean
+               - leading-tight: Tighter line height for better density
+            */
+            <div className="w-full flex items-center justify-center mb-1 overflow-hidden">
+              <span className={`text-center font-bold leading-tight break-words whitespace-normal ${textSize} ${lineClamp} ${isPlaying
                 ? 'text-white'
-                : 'text-gray-900'
-              }`}>
-              {truncateText(pad.name, maxLength)}
-            </span>
+                : theme === 'dark'
+                  ? 'text-white'
+                  : 'text-gray-900'
+                }`}>
+                {pad.name}
+              </span>
+            </div>
           ) : null}
 
-          <div className={`text-xs opacity-75 ${isPlaying
+          <div className={`text-xs opacity-75 whitespace-nowrap ${isPlaying
             ? 'text-white'
             : theme === 'dark'
               ? 'text-gray-300'

@@ -1,5 +1,6 @@
 import * as React from 'react';
 import JSZip from 'jszip';
+import lamejs from 'lamejs';
 import { PadData, SamplerBank, BankMetadata } from '../types/sampler';
 import { 
   derivePassword, 
@@ -42,7 +43,7 @@ interface SamplerStore {
   moveBankUp: (id: string) => void;
   moveBankDown: (id: string) => void;
   transferPad: (padId: string, sourceBankId: string, targetBankId: string) => void;
-  exportAdminBank: (id: string, title: string, description: string, transferable: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  exportAdminBank: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, onProgress?: (progress: number) => void) => Promise<void>;
   canTransferFromBank: (bankId: string) => boolean;
 }
 
@@ -131,7 +132,7 @@ const saveBatchBlobsToDB = async (items: BatchFileItem[]) => {
 
 // --- END OPTIMIZATION ---
 
-// Quota tracking helpers (same as before)
+// Quota tracking helpers
 const getCurrentQuotaUsage = async (): Promise<number> => {
   try {
     const db = await openFileDB();
@@ -144,7 +145,6 @@ const getCurrentQuotaUsage = async (): Promise<number> => {
   } catch (error) { return 0; }
 };
 
-// ... (Keep existing helpers: saveFileHandle, getFileHandle, deleteFileHandle, getBlobFromDB, deleteBlobFromDB, saveBlobToDB) ...
 const saveFileHandle = async (id: string, handle: FileSystemFileHandle, type: 'audio' | 'image' = 'audio') => {
   try {
     const db = await openFileDB();
@@ -231,7 +231,6 @@ const deleteBlobFromDB = async (id: string, isImage: boolean = false) => {
   } catch (e) {}
 };
 
-// ... (base64 and restore helpers remain same) ...
 const fileToBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
   const r = new FileReader(); r.readAsDataURL(file); r.onload = () => resolve(r.result as string); r.onerror = reject;
 });
@@ -244,6 +243,140 @@ const base64ToBlob = (base64: string): Blob => {
 };
 
 const generateId = (): string => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+// --- AUDIO TRIMMING HELPER FUNCTIONS ---
+
+const detectAudioFormat = (blob: Blob): 'mp3' | 'wav' | 'ogg' | 'unknown' => {
+  const type = blob.type.toLowerCase();
+  if (type.includes('mp3') || type.includes('mpeg')) return 'mp3';
+  if (type.includes('wav') || type.includes('wave')) return 'wav';
+  if (type.includes('ogg')) return 'ogg';
+  return 'unknown';
+};
+
+const audioBufferToWavBlob = (audioBuffer: AudioBuffer): Blob => {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const format = 1; // PCM
+  const bitDepth = 16;
+  const bytesPerSample = bitDepth / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = audioBuffer.length * blockAlign;
+  const bufferSize = 44 + dataSize;
+  const buffer = new ArrayBuffer(bufferSize);
+  const view = new DataView(buffer);
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeString(0, 'RIFF');
+  view.setUint32(4, bufferSize - 8, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, format, true);
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitDepth, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataSize, true);
+  const channels: Float32Array[] = [];
+  for (let c = 0; c < numChannels; c++) channels.push(audioBuffer.getChannelData(c));
+  let offset = 44;
+  for (let i = 0; i < audioBuffer.length; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      const sample = Math.max(-1, Math.min(1, channels[c][i]));
+      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      view.setInt16(offset, intSample, true);
+      offset += 2;
+    }
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+};
+
+const encodeAudioBufferToMP3 = (audioBuffer: AudioBuffer, bitrate: number = 128): { blob: Blob; format: 'mp3' | 'wav' } => {
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  try {
+    const leftChannel = audioBuffer.getChannelData(0);
+    const rightChannel = numChannels > 1 ? audioBuffer.getChannelData(1) : leftChannel;
+    const convertToInt16 = (samples: Float32Array): Int16Array => {
+      const int16 = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return int16;
+    };
+    const leftInt16 = convertToInt16(leftChannel);
+    const rightInt16 = convertToInt16(rightChannel);
+    const mp3encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, bitrate);
+    const mp3Data: Int8Array[] = [];
+    const sampleBlockSize = 1152;
+    for (let i = 0; i < leftInt16.length; i += sampleBlockSize) {
+      const leftChunk = leftInt16.subarray(i, i + sampleBlockSize);
+      const rightChunk = rightInt16.subarray(i, i + sampleBlockSize);
+      let mp3buf: Int8Array;
+      if (numChannels === 1) mp3buf = mp3encoder.encodeBuffer(leftChunk);
+      else mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
+      if (mp3buf.length > 0) mp3Data.push(mp3buf);
+    }
+    const mp3buf = mp3encoder.flush();
+    if (mp3buf.length > 0) mp3Data.push(mp3buf);
+    const totalLength = mp3Data.reduce((acc, chunk) => acc + chunk.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of mp3Data) { result.set(chunk, offset); offset += chunk.length; }
+    console.log('✅ MP3 encoding successful');
+    return { blob: new Blob([result], { type: 'audio/mp3' }), format: 'mp3' };
+  } catch (error) {
+    console.warn('⚠️ MP3 encoding failed, falling back to WAV:', error);
+    return { blob: audioBufferToWavBlob(audioBuffer), format: 'wav' };
+  }
+};
+
+const trimAudio = async (
+  audioBlob: Blob,
+  startTimeMs: number,
+  endTimeMs: number,
+  originalFormat: 'mp3' | 'wav' | 'ogg' | 'unknown'
+): Promise<{ blob: Blob; newDurationMs: number }> => {
+  console.log(`🔧 trimAudio() called: startMs=${startTimeMs}, endMs=${endTimeMs}, format=${originalFormat}`);
+  const arrayBuffer = await audioBlob.arrayBuffer();
+  const arrayBufferCopy = arrayBuffer.slice(0);
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  const audioContext = new AudioContextClass();
+  try {
+    const audioBuffer = await audioContext.decodeAudioData(arrayBufferCopy);
+    const actualDurationMs = audioBuffer.duration * 1000;
+    const sampleRate = audioBuffer.sampleRate;
+    const startSample = Math.floor((startTimeMs / 1000) * sampleRate);
+    const endSample = Math.min(Math.floor((endTimeMs / 1000) * sampleRate), audioBuffer.length);
+    const trimmedLength = endSample - startSample;
+    
+    if (trimmedLength <= 0) throw new Error(`Invalid trim range: trimmedLength=${trimmedLength}`);
+    
+    const trimmedBuffer = audioContext.createBuffer(audioBuffer.numberOfChannels, trimmedLength, sampleRate);
+    for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+      const originalData = audioBuffer.getChannelData(channel);
+      const trimmedData = trimmedBuffer.getChannelData(channel);
+      for (let i = 0; i < trimmedLength; i++) trimmedData[i] = originalData[startSample + i];
+    }
+    const newDurationMs = (trimmedLength / sampleRate) * 1000;
+    let resultBlob: Blob;
+    if (originalFormat === 'mp3') {
+      const encodeResult = encodeAudioBufferToMP3(trimmedBuffer);
+      resultBlob = encodeResult.blob;
+    } else {
+      resultBlob = audioBufferToWavBlob(trimmedBuffer);
+    }
+    return { blob: resultBlob, newDurationMs };
+  } finally {
+    await audioContext.close();
+  }
+};
 
 const restoreFileAccess = async (padId: string, type: 'audio' | 'image'): Promise<string | null> => {
   const keyPrefix = type === 'image' ? 'image' : 'audio';
@@ -281,7 +414,6 @@ export function useSamplerStore(): SamplerStore {
   const currentBank = React.useMemo(() => banks.find(b => b.id === currentBankId) || null, [banks, currentBankId]);
   const isDualMode = React.useMemo(() => primaryBankId !== null, [primaryBankId]);
 
-  // ... (Keep existing State Effects: localStorage save/restore) ...
   React.useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify({ primaryBankId, secondaryBankId, currentBankId }));
@@ -289,7 +421,6 @@ export function useSamplerStore(): SamplerStore {
   }, [primaryBankId, secondaryBankId, currentBankId]);
 
   const restoreAllFiles = React.useCallback(async () => {
-    // ... (Keep existing restore logic exactly as is) ...
     if (typeof window === 'undefined') return;
     const savedData = localStorage.getItem(STORAGE_KEY);
     const savedState = localStorage.getItem(STATE_STORAGE_KEY);
@@ -340,7 +471,6 @@ export function useSamplerStore(): SamplerStore {
   React.useEffect(() => { restoreAllFiles(); }, [restoreAllFiles]);
 
   React.useEffect(() => {
-    // ... (Keep existing localStorage save logic) ...
     if (typeof window !== 'undefined' && banks.length > 0) {
       try {
         const dataToSave = {
@@ -375,7 +505,6 @@ export function useSamplerStore(): SamplerStore {
     return currentBankId;
   }, [isDualMode, primaryBankId, secondaryBankId, currentBankId]);
 
-  // ... (Keep simple addPad, addPads, updatePad, etc) ...
   const addPad = React.useCallback(async (file: File, bankId?: string) => {
     const targetBankId = getTargetBankId(bankId);
     if (!targetBankId) return;
@@ -411,7 +540,6 @@ export function useSamplerStore(): SamplerStore {
       const newPads: PadData[] = [];
       let maxPosition = targetBank.pads.length > 0 ? Math.max(...targetBank.pads.map(p => p.position || 0)) : -1;
 
-      // Prepare all files
       for (const file of validFiles) {
         if (file.size > 50 * 1024 * 1024) continue;
         const padId = generateId();
@@ -425,12 +553,10 @@ export function useSamplerStore(): SamplerStore {
         };
         newPads.push(newPad);
         
-        // Metadata loading
         const audio = new Audio(audioUrl);
         audio.addEventListener('loadedmetadata', () => { newPad.endTimeMs = audio.duration * 1000; setBanks(p => [...p]); });
       }
 
-      // Bulk Save!
       if (batchItems.length > 0) {
         await saveBatchBlobsToDB(batchItems);
         setBanks(prev => prev.map(b => b.id === targetBankId ? { ...b, pads: [...b.pads, ...newPads] } : b));
@@ -459,7 +585,6 @@ export function useSamplerStore(): SamplerStore {
       }) } : b));
   }, []);
 
-  // ... (Keep reorderPads, createBank, moveBankUp/Down, transferPad, etc) ...
   const reorderPads = React.useCallback((bankId: string, fromIndex: number, toIndex: number) => {
     setBanks(prev => prev.map(bank => {
       if (bank.id !== bankId) return bank;
@@ -539,36 +664,102 @@ export function useSamplerStore(): SamplerStore {
     });
   }, [primaryBankId, secondaryBankId, currentBankId]);
 
+  // --- FIXED EXPORT BANK (Prevents Audio Bloat) ---
   const exportBank = React.useCallback(async (id: string, onProgress?: (progress: number) => void) => {
-    // ... (Keep existing export logic - it's already reasonably fast for writes) ...
     const bank = banks.find(b => b.id === id);
     if (!bank) throw new Error('Bank not found');
     try {
       const zip = new JSZip();
-      const bankData = { ...bank, createdAt: bank.createdAt.toISOString(), pads: bank.pads.map(pad => ({ ...pad, audioUrl: pad.audioUrl ? `audio/${pad.id}.audio` : undefined, imageUrl: pad.imageUrl ? `images/${pad.id}.image` : undefined, })) };
-      zip.file('bank.json', JSON.stringify(bankData, null, 2));
+      
+      const exportPads = bank.pads.map(pad => ({
+        ...pad,
+        audioUrl: pad.audioUrl ? `audio/${pad.id}.audio` : undefined,
+        imageUrl: pad.imageUrl ? `images/${pad.id}.image` : undefined,
+      }));
+      
+      const bankData = { 
+        ...bank, 
+        createdAt: bank.createdAt.toISOString(), 
+        pads: exportPads,
+        creatorEmail: user?.email || undefined,
+      };
+      
       const audioFolder = zip.folder('audio');
       const imageFolder = zip.folder('images');
       const totalFiles = bank.pads.filter(p => p.audioUrl).length + bank.pads.filter(p => p.imageUrl).length;
       let processedFiles = 0;
+      
       if (audioFolder) {
-        for (const pad of bank.pads) {
+        for (let i = 0; i < bank.pads.length; i++) {
+          const pad = bank.pads[i];
           if (pad.audioUrl) {
-            onProgress && onProgress((processedFiles / totalFiles) * 50);
-            try { const b = await (await fetch(pad.audioUrl)).blob(); audioFolder.file(`${pad.id}.audio`, b); } catch (e) {}
+            onProgress && onProgress((processedFiles / totalFiles) * 60);
+            try {
+              let audioBlob = await (await fetch(pad.audioUrl)).blob();
+              const originalSize = audioBlob.size;
+              
+              // Get actual audio duration to detect trim-out
+              let actualDurationMs = 0;
+              try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                const tempContext = new AudioContextClass();
+                const audioBuffer = await tempContext.decodeAudioData(arrayBuffer.slice(0)); 
+                actualDurationMs = audioBuffer.duration * 1000;
+                tempContext.close();
+                audioBlob = await (await fetch(pad.audioUrl)).blob(); // Reset blob
+              } catch (e) {
+                console.warn('Could not get actual duration, assuming no trim out needed:', e);
+                actualDurationMs = pad.endTimeMs + 1000; // Fake it so check fails safe
+              }
+              
+              // LOGIC FIX: Check if trim is actually needed
+              const hasTrimIn = pad.startTimeMs > 50; // Tolerance for float/UI
+              const hasTrimOut = pad.endTimeMs > 0 && (actualDurationMs - pad.endTimeMs) > 200; // Tolerance
+              const isTrimmed = hasTrimIn || hasTrimOut;
+
+              if (isTrimmed && pad.endTimeMs > pad.startTimeMs) {
+                console.log(`🎵 Export: Pad "${pad.name}" IS trimmed. Processing...`);
+                const format = detectAudioFormat(audioBlob);
+                try {
+                  const trimResult = await trimAudio(audioBlob, pad.startTimeMs, pad.endTimeMs, format);
+                  audioBlob = trimResult.blob;
+                  console.log(`✅ Trimmed "${pad.name}" - original: ${(originalSize / 1024).toFixed(1)}KB, new: ${(audioBlob.size / 1024).toFixed(1)}KB`);
+                  
+                  const exportPad = exportPads.find(p => p.id === pad.id);
+                  if (exportPad) {
+                    exportPad.startTimeMs = 0;
+                    exportPad.endTimeMs = trimResult.newDurationMs; 
+                  }
+                } catch (trimError) {
+                  console.warn(`⚠️ Trim failed for "${pad.name}", using original:`, trimError);
+                }
+              } else {
+                 console.log(`⏩ Export: Pad "${pad.name}" is NOT trimmed. Using original file.`);
+                 // Keep startTimeMs and endTimeMs in JSON as they are, so they load back correctly relative to the untrimmed file
+              }
+              
+              audioFolder.file(`${pad.id}.audio`, audioBlob);
+            } catch (e) {
+              console.error('Audio export error:', e);
+            }
             processedFiles++;
           }
         }
       }
+      
+      zip.file('bank.json', JSON.stringify(bankData, null, 2));
+      
       if (imageFolder) {
         for (const pad of bank.pads) {
           if (pad.imageUrl) {
-            onProgress && onProgress(50 + (processedFiles / totalFiles) * 30);
+            onProgress && onProgress(60 + (processedFiles / totalFiles) * 20);
             try { const b = await (await fetch(pad.imageUrl)).blob(); imageFolder.file(`${pad.id}.image`, b); } catch (e) {}
             processedFiles++;
           }
         }
       }
+      
       onProgress && onProgress(80);
       const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } }, (m) => onProgress && onProgress(80 + (m.percent * 0.2)));
       onProgress && onProgress(100);
@@ -577,7 +768,7 @@ export function useSamplerStore(): SamplerStore {
     } catch (e) { throw e; }
   }, [banks]);
 
-  // --- OPTIMIZED IMPORT BANK ---
+  // --- FIXED IMPORT BANK ---
   const importBank = React.useCallback(async (file: File, onProgress?: (progress: number) => void) => {
     try {
       console.log('🚀 Starting optimized import...');
@@ -586,17 +777,14 @@ export function useSamplerStore(): SamplerStore {
       const zip = new JSZip();
       let contents: JSZip;
 
-      // ... (Decryption Logic remains the same) ...
       try {
         contents = await zip.loadAsync(file);
       } catch (error) {
         if (!user) throw new Error('Login required to import encrypted banks');
         let decrypted = false;
-        // ... (Try cached keys) ...
         for (const [cacheKey, derivedKey] of keyCache.entries()) {
           try { contents = await zip.loadAsync(await decryptZip(file, derivedKey)); decrypted = true; break; } catch (e) {}
         }
-        // ... (Try filename hint) ...
         if (!decrypted) {
           const hintedId = parseBankIdFromFileName(file.name);
           if (hintedId) {
@@ -604,7 +792,6 @@ export function useSamplerStore(): SamplerStore {
              if (d) try { contents = await zip.loadAsync(await decryptZip(file, d)); decrypted = true; } catch (e) {}
           }
         }
-        // ... (Try accessible banks) ...
         if (!decrypted) {
            const accessible = await listAccessibleBankIds(user.id);
            for (const bankId of accessible) {
@@ -617,13 +804,16 @@ export function useSamplerStore(): SamplerStore {
 
       onProgress && onProgress(20);
       
-      // Parse Metadata
       const bankJsonFile = contents.file('bank.json');
       if (!bankJsonFile) throw new Error('Invalid bank file');
       const bankData = JSON.parse(await bankJsonFile.async('string'));
       
       const metadata = await extractBankMetadata(contents);
       const isAdminBank = metadata?.password === true;
+      
+      // LOGIC FIX: 'transferable' should come from metadata explicitly, independent of admin/encryption status
+      const isTransferable = metadata?.transferable ?? true;
+
       if (isAdminBank && !user) throw new Error('Login required');
       if (isAdminBank && user && metadata?.bankId) {
         if (!await hasBankAccess(user.id, metadata.bankId)) throw new Error('Access denied');
@@ -635,29 +825,23 @@ export function useSamplerStore(): SamplerStore {
       const newBank: SamplerBank = {
         ...bankData,
         id: generateId(),
-        name: `${bankData.name} (new)`,
+        name: bankData.name,
         createdAt: bankData.createdAt ? new Date(bankData.createdAt) : new Date(),
         sortOrder: maxSortOrder + 1,
         pads: [],
         isAdminBank,
-        transferable: metadata?.transferable ?? true,
+        transferable: isTransferable, // Set explicit flag
         exportable: metadata?.exportable ?? true,
         bankMetadata: metadata
       };
-
-      // --- OPTIMIZED BATCH PROCESSING START ---
       
       const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-      
-      // Fast iOS safe URL creator (50ms timeout vs 2000ms)
       const createFastIOSBlobURL = async (blob: Blob): Promise<string> => {
         if (!isIOS) return URL.createObjectURL(blob);
         try {
           const url = URL.createObjectURL(blob);
           await new Promise<void>(resolve => {
             const audio = new Audio();
-            // Don't wait forever - if it takes >50ms, just assume it's fine and move on
-            // This prevents the "hanging" feeling on import
             const t = setTimeout(() => { audio.src = ''; resolve(); }, 50);
             audio.oncanplaythrough = () => { clearTimeout(t); resolve(); };
             audio.onerror = () => { clearTimeout(t); resolve(); };
@@ -665,38 +849,31 @@ export function useSamplerStore(): SamplerStore {
           });
           return url;
         } catch (e) {
-          return URL.createObjectURL(blob); // Fallback
+          return URL.createObjectURL(blob);
         }
       };
 
       const newPads: PadData[] = [];
       const totalPads = bankData.pads.length;
-      
-      // Process in batches of 10 to balance memory vs speed
       const BATCH_SIZE = 10;
       
       for (let i = 0; i < totalPads; i += BATCH_SIZE) {
         const batchPads = bankData.pads.slice(i, i + BATCH_SIZE);
         const batchFilesToStore: BatchFileItem[] = [];
         
-        // Process batch in parallel
         const processedBatch = await Promise.all(batchPads.map(async (padData: any) => {
           try {
              const newPadId = generateId();
              const audioFile = contents.file(`audio/${padData.id}.audio`);
              const imageFile = contents.file(`images/${padData.id}.image`);
-             
              let audioUrl: string | null = null;
              let imageUrl: string | null = null;
 
-             // Extract Audio
              if (audioFile) {
                const audioBlob = await audioFile.async('blob');
                batchFilesToStore.push({ id: newPadId, blob: audioBlob, type: 'audio' });
                audioUrl = await createFastIOSBlobURL(audioBlob);
              }
-
-             // Extract Image
              if (imageFile) {
                const imageBlob = await imageFile.async('blob');
                batchFilesToStore.push({ id: newPadId, blob: imageBlob, type: 'image' });
@@ -709,13 +886,13 @@ export function useSamplerStore(): SamplerStore {
                  id: newPadId,
                  audioUrl,
                  imageUrl,
-                 imageData: undefined, // Clear legacy data
+                 imageData: undefined,
                  fadeInMs: padData.fadeInMs || 0,
                  fadeOutMs: padData.fadeOutMs || 0,
                  startTimeMs: padData.startTimeMs || 0,
                  endTimeMs: padData.endTimeMs || 0,
                  pitch: padData.pitch || 0,
-                 position: padData.position || (newPads.length + batchPads.indexOf(padData)),
+                 position: padData.position ?? (newPads.length + batchPads.indexOf(padData)),
                };
              }
              return null;
@@ -725,16 +902,13 @@ export function useSamplerStore(): SamplerStore {
           }
         }));
 
-        // Bulk Save to DB (One transaction for the whole batch)
         if (batchFilesToStore.length > 0) {
           await saveBatchBlobsToDB(batchFilesToStore);
         }
 
-        // Add successful pads
         const validPads = processedBatch.filter(p => p !== null);
         newPads.push(...validPads);
         
-        // Update Progress
         const currentProgress = 30 + ((i + BATCH_SIZE) / totalPads * 60);
         onProgress && onProgress(Math.min(95, currentProgress));
       }
@@ -751,43 +925,162 @@ export function useSamplerStore(): SamplerStore {
     }
   }, [banks, user]);
 
-  // ... (Keep existing exportAdminBank, canTransferFromBank) ...
-  const exportAdminBank = React.useCallback(async (id: string, title: string, description: string, transferable: boolean, onProgress?: (progress: number) => void) => {
-      // ... (Same logic as before) ...
+  // --- FIXED ADMIN EXPORT (Respects "Transferable" & Prevents Audio Bloat) ---
+  const exportAdminBank = React.useCallback(async (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, onProgress?: (progress: number) => void) => {
       if (!user || profile?.role !== 'admin') throw new Error('Admin only');
       const bank = banks.find(b => b.id === id);
       if (!bank) throw new Error('Bank not found');
-      onProgress && onProgress(10);
+      onProgress && onProgress(5);
+      
       const zip = new JSZip();
-      const bankData = { ...bank, createdAt: bank.createdAt.toISOString(), pads: bank.pads.map(pad => ({ ...pad, audioUrl: pad.audioUrl ? `audio/${pad.id}.audio` : undefined, imageUrl: pad.imageUrl ? `images/${pad.id}.image` : undefined })) };
-      zip.file('bank.json', JSON.stringify(bankData, null, 2));
-      addBankMetadata(zip, { password: true, transferable, exportable: false, title, description });
+      
+      const exportPads = bank.pads.map(pad => ({
+        ...pad,
+        audioUrl: pad.audioUrl ? `audio/${pad.id}.audio` : undefined,
+        imageUrl: pad.imageUrl ? `images/${pad.id}.image` : undefined,
+      }));
+      
+      const bankData = { ...bank, createdAt: bank.createdAt.toISOString(), pads: exportPads };
+      
       const audioFolder = zip.folder('audio');
       const imageFolder = zip.folder('images');
       const total = bank.pads.filter(p => p.audioUrl).length + bank.pads.filter(p => p.imageUrl).length;
       let count = 0;
-      if (audioFolder) { for (const p of bank.pads) { if (p.audioUrl) { onProgress && onProgress((count/total)*30); try { const b = await (await fetch(p.audioUrl)).blob(); audioFolder.file(`${p.id}.audio`, b); } catch(e){} count++; } } }
-      if (imageFolder) { for (const p of bank.pads) { if (p.imageUrl) { onProgress && onProgress(30 + (count/total)*20); try { const b = await (await fetch(p.imageUrl)).blob(); imageFolder.file(`${p.id}.image`, b); } catch(e){} count++; } } }
+      
+      if (audioFolder) {
+        for (const pad of bank.pads) {
+          if (pad.audioUrl) {
+            onProgress && onProgress(5 + (count / total) * 35);
+            try {
+              let audioBlob = await (await fetch(pad.audioUrl)).blob();
+              const originalSize = audioBlob.size;
+              
+              let actualDurationMs = 0;
+              try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                const tempContext = new AudioContextClass();
+                const audioBuffer = await tempContext.decodeAudioData(arrayBuffer.slice(0)); 
+                actualDurationMs = audioBuffer.duration * 1000;
+                tempContext.close();
+                audioBlob = await (await fetch(pad.audioUrl)).blob();
+              } catch (e) {
+                console.warn('Could not get actual duration, assuming no trim out needed:', e);
+                actualDurationMs = pad.endTimeMs + 1000;
+              }
+              
+              const hasTrimIn = pad.startTimeMs > 50; 
+              const hasTrimOut = pad.endTimeMs > 0 && (actualDurationMs - pad.endTimeMs) > 200; 
+              const isTrimmed = hasTrimIn || hasTrimOut;
+              
+              if (isTrimmed && pad.endTimeMs > pad.startTimeMs) {
+                console.log(`🎵 Admin Export: Pad "${pad.name}" IS trimmed. Processing...`);
+                const format = detectAudioFormat(audioBlob);
+                try {
+                  const trimResult = await trimAudio(audioBlob, pad.startTimeMs, pad.endTimeMs, format);
+                  audioBlob = trimResult.blob;
+                  console.log(`✅ Trimmed "${pad.name}" - original: ${(originalSize / 1024).toFixed(1)}KB, new: ${(audioBlob.size / 1024).toFixed(1)}KB`);
+                  
+                  const exportPad = exportPads.find(p => p.id === pad.id);
+                  if (exportPad) {
+                    exportPad.startTimeMs = 0;
+                    exportPad.endTimeMs = trimResult.newDurationMs; 
+                  }
+                } catch (trimError) {
+                  console.warn(`⚠️ Trim failed for "${pad.name}", using original:`, trimError);
+                }
+              } else {
+                 console.log(`⏩ Admin Export: Pad "${pad.name}" is NOT trimmed. Using original.`);
+              }
+              
+              audioFolder.file(`${pad.id}.audio`, audioBlob);
+            } catch (e) {
+              console.error('Audio export error:', e);
+            }
+            count++;
+          }
+        }
+      }
+      
+      if (imageFolder) {
+        for (const pad of bank.pads) {
+          if (pad.imageUrl) {
+            onProgress && onProgress(40 + (count / total) * 10);
+            try {
+              const b = await (await fetch(pad.imageUrl)).blob();
+              imageFolder.file(`${pad.id}.image`, b);
+            } catch (e) {}
+            count++;
+          }
+        }
+      }
+      
+      zip.file('bank.json', JSON.stringify(bankData, null, 2));
+      
       onProgress && onProgress(50);
-      const adminBank = await createAdminBankWithDerivedKey(title, description, user.id);
-      if (!adminBank) throw new Error('DB creation failed');
-      onProgress && onProgress(60);
-      const encrypted = await encryptZip(zip, adminBank.derived_key);
-      onProgress && onProgress(80);
-      const url = URL.createObjectURL(encrypted);
-      const a = document.createElement('a'); a.href = url; a.download = `${title.replace(/[^a-z0-9]/gi, '_')}.bank`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      
+      if (addToDatabase) {
+        const adminBank = await createAdminBankWithDerivedKey(title, description, user.id);
+        if (!adminBank) throw new Error('DB creation failed');
+        const bankId = adminBank.id;
+        const derivedKey = adminBank.derived_key;
+        
+        // LOGIC FIX: Always set transferable to explicit argument
+        addBankMetadata(zip, { password: true, transferable, exportable: false, title, description, bankId });
+        
+        onProgress && onProgress(60);
+        
+        try {
+          const { supabase } = await import('@/lib/supabase');
+          await supabase.from('user_bank_access').upsert({ user_id: user.id, bank_id: bankId }, { onConflict: 'user_id,bank_id' as any });
+        } catch (e) {}
+        
+        const encrypted = await encryptZip(zip, derivedKey);
+        onProgress && onProgress(80);
+        
+        const url = URL.createObjectURL(encrypted);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${title.replace(/[^a-z0-9]/gi, '_')}.bank`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } else {
+        // LOGIC FIX: 'password: false' means unencrypted, but 'transferable' must still be respected
+        addBankMetadata(zip, { password: false, transferable, exportable: true, title, description });
+        
+        onProgress && onProgress(60);
+        console.log('📦 Creating shareable admin bank (unencrypted, no database entry)');
+        
+        const zipBlob = await zip.generateAsync({ 
+          type: 'blob', 
+          compression: 'DEFLATE', 
+          compressionOptions: { level: 9 } 
+        }, (m) => onProgress && onProgress(60 + (m.percent * 0.3)));
+        
+        onProgress && onProgress(90);
+        
+        const url = URL.createObjectURL(zipBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${title.replace(/[^a-z0-9]/gi, '_')}.bank`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+      
       onProgress && onProgress(100);
-      try {
-        const { supabase } = await import('@/lib/supabase');
-        await supabase.from('user_bank_access').upsert({ user_id: user.id, bank_id: adminBank.id }, { onConflict: 'user_id,bank_id' as any });
-      } catch (e) {}
   }, [banks, user, profile]);
 
   const canTransferFromBank = React.useCallback((bankId: string): boolean => {
     const bank = banks.find(b => b.id === bankId);
     if (!bank) return false;
-    if (bank.isAdminBank && bank.bankMetadata) return bank.bankMetadata.transferable;
-    return true;
+    // LOGIC FIX: Check transferable property directly, not just isAdminBank
+    if (typeof bank.transferable === 'boolean') return bank.transferable;
+    if (bank.bankMetadata && typeof bank.bankMetadata.transferable === 'boolean') return bank.bankMetadata.transferable;
+    return true; // Default allow if flag is missing
   }, [banks]);
 
   return {

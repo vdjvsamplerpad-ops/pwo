@@ -40,6 +40,15 @@ const colorOptions = [
   { label: 'Gray', value: '#6b7280' },
   { label: 'Black', value: '#1f2937' },
   { label: 'White', value: '#f9fafb' },
+  // New colors
+  { label: 'Brown', value: '#92400e' },
+  { label: 'Neon Green', value: '#39ff14' },
+  { label: 'Neon Yellow', value: '#ffff00' },
+  { label: 'Hot Pink', value: '#ff0095' },
+  { label: 'Gold', value: '#ffd700' },
+  { label: 'Maroon', value: '#800000' },
+  { label: 'Turquoise', value: '#40e0d0' },
+  { label: 'Coral', value: '#ff6600' },
 ];
 
 export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, onUnload }: PadEditDialogProps) {
@@ -78,13 +87,52 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
       setUploadError(null);
 
       if (pad.audioUrl) {
+        let durationLoaded = false;
+        
+        // Method 1: Try HTMLAudioElement (works on most browsers)
         const audio = new Audio(pad.audioUrl);
         audio.addEventListener('loadedmetadata', () => {
-          setAudioDuration(audio.duration * 1000);
-          if (endTimeMs[0] === 0) {
-            setEndTimeMs([audio.duration * 1000]);
+          if (!durationLoaded && audio.duration && isFinite(audio.duration)) {
+            durationLoaded = true;
+            setAudioDuration(audio.duration * 1000);
+            if (endTimeMs[0] === 0) {
+              setEndTimeMs([audio.duration * 1000]);
+            }
           }
         });
+        
+        // Method 2: Fallback using Web Audio API (better iOS support)
+        // This fires if HTMLAudioElement doesn't load metadata within 500ms
+        const fallbackTimeout = setTimeout(async () => {
+          if (durationLoaded) return;
+          
+          try {
+            const response = await fetch(pad.audioUrl);
+            const arrayBuffer = await response.arrayBuffer();
+            const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+            const audioContext = new AudioContextClass();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            if (!durationLoaded) {
+              durationLoaded = true;
+              const durationMs = audioBuffer.duration * 1000;
+              setAudioDuration(durationMs);
+              if (endTimeMs[0] === 0) {
+                setEndTimeMs([durationMs]);
+              }
+            }
+            
+            audioContext.close();
+          } catch (error) {
+            console.warn('Failed to decode audio for duration:', error);
+            // Use pad's existing endTimeMs if available
+            if (pad.endTimeMs > 0) {
+              setAudioDuration(pad.endTimeMs);
+            }
+          }
+        }, 500);
+        
+        return () => clearTimeout(fallbackTimeout);
       }
     }
   }, [open, pad]);

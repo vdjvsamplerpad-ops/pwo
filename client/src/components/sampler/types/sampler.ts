@@ -28,6 +28,7 @@ export interface SamplerBank {
   transferable?: boolean; // Whether pads can be transferred from this bank
   exportable?: boolean; // Whether this bank can be exported
   bankMetadata?: BankMetadata; // Metadata for admin banks
+  creatorEmail?: string; // Email of the user who created/exported the bank
 }
 
 export interface BankMetadata {

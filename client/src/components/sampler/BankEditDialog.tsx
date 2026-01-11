@@ -18,7 +18,7 @@ interface BankEditDialogProps {
   onSave: (updates: Partial<SamplerBank>) => void;
   onDelete: () => void;
   onExport: () => void;
-  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, onProgress?: (progress: number) => void) => Promise<void>;
 }
 
 const colorOptions = [
@@ -42,6 +42,15 @@ const colorOptions = [
   { label: 'Gray', value: '#6b7280', textColor: '#ffffff' },
   { label: 'Black', value: '#1f2937', textColor: '#ffffff' },
   { label: 'White', value: '#f9fafb', textColor: '#000000' },
+  // New colors
+  { label: 'Brown', value: '#92400e', textColor: '#ffffff' },
+  { label: 'Neon Green', value: '#39ff14', textColor: '#000000' },
+  { label: 'Neon Yellow', value: '#ffff00', textColor: '#000000' },
+  { label: 'Hot Pink', value: '#ff0095', textColor: '#ffffff' },
+  { label: 'Gold', value: '#ffd700', textColor: '#000000' },
+  { label: 'Maroon', value: '#800000', textColor: '#ffffff' },
+  { label: 'Turquoise', value: '#40e0d0', textColor: '#000000' },
+  { label: 'Coral', value: '#ff6600', textColor: '#ffffff' },
 ];
 
 export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDelete, onExport, onExportAdmin }: BankEditDialogProps) {
@@ -53,6 +62,7 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
   const [adminTitle, setAdminTitle] = React.useState(bank.name);
   const [adminDescription, setAdminDescription] = React.useState('');
   const [adminTransferable, setAdminTransferable] = React.useState(false);
+  const [adminAddToDatabase, setAdminAddToDatabase] = React.useState(false);
   const [showAdminExportProgress, setShowAdminExportProgress] = React.useState(false);
   const [adminExportProgress, setAdminExportProgress] = React.useState(0);
   const [adminExportStatus, setAdminExportStatus] = React.useState<'loading' | 'success' | 'error'>('loading');
@@ -65,6 +75,7 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
       setAdminTitle(bank.name);
       setAdminDescription('');
       setAdminTransferable(false);
+      setAdminAddToDatabase(false);
     }
   }, [open, bank]);
 
@@ -92,7 +103,7 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
     setAdminExportError('');
 
     try {
-      await onExportAdmin(bank.id, adminTitle, adminDescription, adminTransferable, (progress) => {
+      await onExportAdmin(bank.id, adminTitle, adminDescription, adminTransferable, adminAddToDatabase, (progress) => {
         setAdminExportProgress(progress);
       });
       setAdminExportStatus('success');
@@ -128,7 +139,7 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
  
 
             <div className="space-y-2">
-              <Label>Default Color (for new pads)</Label>
+              <Label>Bank Color</Label>
               <div className="flex gap-1 flex-wrap">
                 {colorOptions.map((colorOption) => (
                   <button
@@ -177,6 +188,13 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
               <div className={`text-sm space-y-1 ${theme === 'dark' ? 'text-gray-300' : 'text-gray-600'}`}>
                 <div>Created: {formatDate(bank.createdAt)}</div>
                 <div>Pads: {bank.pads.length}</div>
+                <div>Created by: {bank.isAdminBank ? (
+                  <span className="text-yellow-500 font-medium">ADMIN DJ V</span>
+                ) : bank.creatorEmail ? (
+                  <span>{bank.creatorEmail}</span>
+                ) : (
+                  <span className="italic text-gray-400">Unknown</span>
+                )}</div>
               </div>
             </div>
 
@@ -256,6 +274,20 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
                 id="adminTransferable"
                 checked={adminTransferable}
                 onCheckedChange={setAdminTransferable}
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="adminAddToDatabase">Add to Database</Label>
+                <p className={`text-xs ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
+                  Official bank with user access control
+                </p>
+              </div>
+              <Switch
+                id="adminAddToDatabase"
+                checked={adminAddToDatabase}
+                onCheckedChange={setAdminAddToDatabase}
               />
             </div>
 
