@@ -9,7 +9,7 @@ import { ProgressDialog } from '@/components/ui/progress-dialog';
 import { Trash2, Download, Crown } from 'lucide-react';
 import { SamplerBank, PadData } from './types/sampler';
 import { useAuth } from '@/hooks/useAuth';
-import { isReservedShortcutKey, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
+import { isReservedShortcutCombo, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
 
 interface BankEditDialogProps {
   bank: SamplerBank;
@@ -149,7 +149,7 @@ export function BankEditDialog({ bank, allBanks, allPads, open, onOpenChange, th
       return;
     }
 
-    if (isReservedShortcutKey(nextKey)) {
+    if (isReservedShortcutCombo(nextKey)) {
       setShortcutError(`"${nextKey}" is reserved for global controls.`);
       return;
     }
@@ -188,7 +188,12 @@ export function BankEditDialog({ bank, allBanks, allPads, open, onOpenChange, th
       return;
     }
 
-    const normalized = normalizeShortcutKey(event.key);
+    const normalized = normalizeShortcutKey(event.key, {
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey
+    });
     if (!normalized) {
       setShortcutError('Please press a letter or number key.');
       return;

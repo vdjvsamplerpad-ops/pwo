@@ -9,7 +9,7 @@ import { useWindowSize } from './hooks/useWindowSize';
 import { StopMode, PadData } from './types/sampler';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { isReservedShortcutKey, normalizeShortcutKey } from '@/lib/keyboard-shortcuts';
+import { isReservedShortcutCombo, normalizeShortcutKey } from '@/lib/keyboard-shortcuts';
 
 // Persistence key for app settings
 const SETTINGS_STORAGE_KEY = 'vdjv-sampler-settings';
@@ -350,6 +350,25 @@ export function SamplerPadApp() {
     [playbackManager]
   );
 
+  const ensureRegisteredAndPlayStutter = React.useCallback(
+    (pad: PadData, bankId: string, bankName: string) => {
+      if (playbackManager.isPadRegistered(pad.id)) {
+        playbackManager.playStutterPad(pad.id);
+        return;
+      }
+
+      playbackManager
+        .registerPad(pad.id, pad, bankId, bankName)
+        .then(() => playbackManager.playStutterPad(pad.id))
+        .catch((error) => {
+          console.error('Failed to register pad for shortcut:', pad.id, error);
+        });
+    },
+    [playbackManager]
+  );
+
+  const activeHoldKeysRef = React.useRef<Map<string, string>>(new Map());
+
   React.useEffect(() => {
     const isEditableTarget = (target: EventTarget | null) => {
       if (!target || !(target as HTMLElement).tagName) return false;
@@ -365,13 +384,17 @@ export function SamplerPadApp() {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
 
-      const normalized = normalizeShortcutKey(event.key);
+      const normalized = normalizeShortcutKey(event.key, {
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey
+      });
       if (!normalized) return;
 
-      if (isReservedShortcutKey(normalized)) {
+      if (isReservedShortcutCombo(normalized)) {
         event.preventDefault();
         switch (normalized) {
           case 'Space':
@@ -423,18 +446,57 @@ export function SamplerPadApp() {
       const mapped = shortcutMap.get(normalized);
       if (mapped) {
         event.preventDefault();
-        ensureRegisteredAndPlay(mapped.pad, mapped.bankId, mapped.bankName);
+        switch (mapped.pad.triggerMode) {
+          case 'toggle':
+            playbackManager.togglePad(mapped.pad.id);
+            break;
+          case 'hold':
+            activeHoldKeysRef.current.set(normalized, mapped.pad.id);
+            ensureRegisteredAndPlay(mapped.pad, mapped.bankId, mapped.bankName);
+            break;
+          case 'stutter':
+            ensureRegisteredAndPlayStutter(mapped.pad, mapped.bankId, mapped.bankName);
+            break;
+          case 'unmute':
+          default:
+            ensureRegisteredAndPlay(mapped.pad, mapped.bankId, mapped.bankName);
+            break;
+        }
+      }
+    };
+
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (isEditableTarget(event.target)) return;
+
+      const normalized = normalizeShortcutKey(event.key, {
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey
+      });
+      if (!normalized) return;
+
+      const holdPadId = activeHoldKeysRef.current.get(normalized);
+      if (holdPadId) {
+        playbackManager.stopPad(holdPadId, 'instant');
+        activeHoldKeysRef.current.delete(normalized);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, [
     handleMixerToggle,
     handleSideMenuToggle,
     handleStopAll,
     handleToggleMute,
     ensureRegisteredAndPlay,
+    ensureRegisteredAndPlayStutter,
     shortcutMap,
     bankShortcutMap,
     settings.editMode,
@@ -444,7 +506,8 @@ export function SamplerPadApp() {
     updateSetting,
     isDualMode,
     setPrimaryBank,
-    setCurrentBank
+    setCurrentBank,
+    playbackManager
   ]);
 
   // Enhanced pad transfer handler with better dual mode support

@@ -9,7 +9,7 @@ import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { Upload, Image as ImageIcon } from 'lucide-react';
 import { PadData } from './types/sampler';
 import { WaveformTrim } from './WaveformTrim';
-import { isReservedShortcutKey, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
+import { isReservedShortcutCombo, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
 
 interface PadEditDialogProps {
   pad: PadData;
@@ -251,7 +251,7 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
       return;
     }
 
-    if (isReservedShortcutKey(nextKey)) {
+    if (isReservedShortcutCombo(nextKey)) {
       setShortcutError(`"${nextKey}" is reserved for global controls.`);
       return;
     }
@@ -280,7 +280,12 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
       return;
     }
 
-    const normalized = normalizeShortcutKey(event.key);
+    const normalized = normalizeShortcutKey(event.key, {
+      shiftKey: event.shiftKey,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      metaKey: event.metaKey
+    });
     if (!normalized) {
       setShortcutError('Please press a letter or number key.');
       return;
