@@ -9,6 +9,7 @@ import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { Upload, Image as ImageIcon } from 'lucide-react';
 import { PadData } from './types/sampler';
 import { WaveformTrim } from './WaveformTrim';
+import { isReservedShortcutKey, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
 
 interface PadEditDialogProps {
   pad: PadData;
@@ -64,6 +65,8 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
   const [pitch, setPitch] = React.useState([pad.pitch || 0]);
   const [imageUrl, setImageUrl] = React.useState(pad.imageUrl || '');
   const [imageData, setImageData] = React.useState(pad.imageData || '');
+  const [shortcutKey, setShortcutKey] = React.useState(pad.shortcutKey || '');
+  const [shortcutError, setShortcutError] = React.useState<string | null>(null);
   const [audioDuration, setAudioDuration] = React.useState(0);
   const [isUploading, setIsUploading] = React.useState(false);
   const [uploadError, setUploadError] = React.useState<string | null>(null);
@@ -84,6 +87,8 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
       setPitch([pad.pitch || 0]);
       setImageUrl(pad.imageUrl || '');
       setImageData(pad.imageData || '');
+      setShortcutKey(pad.shortcutKey || '');
+      setShortcutError(null);
       setUploadError(null);
 
       if (pad.audioUrl) {
@@ -239,8 +244,58 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
     setUploadError(null);
   };
 
+  const applyShortcutKey = (nextKey: string | null) => {
+    if (!nextKey) {
+      setShortcutKey('');
+      setShortcutError(null);
+      return;
+    }
+
+    if (isReservedShortcutKey(nextKey)) {
+      setShortcutError(`"${nextKey}" is reserved for global controls.`);
+      return;
+    }
+
+    const duplicatePad = allPads.find((p) => {
+      if (p.id === pad.id) return false;
+      const existingKey = p.shortcutKey ? normalizeShortcutKey(p.shortcutKey) : '';
+      return existingKey === nextKey;
+    });
+
+    if (duplicatePad) {
+      setShortcutError(`"${nextKey}" is already assigned to "${duplicatePad.name}".`);
+      return;
+    }
+
+    setShortcutKey(nextKey);
+    setShortcutError(null);
+  };
+
+  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Tab') return;
+    event.preventDefault();
+
+    if (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Escape') {
+      applyShortcutKey(null);
+      return;
+    }
+
+    const normalized = normalizeShortcutKey(event.key);
+    if (!normalized) {
+      setShortcutError('Please press a letter or number key.');
+      return;
+    }
+
+    applyShortcutKey(normalized);
+  };
+
   const handleSave = async () => {
     try {
+      if (shortcutError) {
+        setUploadError(shortcutError);
+        return;
+      }
+
       const updatedPad: PadData = {
         ...pad,
         name,
@@ -255,6 +310,7 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
         pitch: pitch[0],
         imageUrl,
         imageData,
+        shortcutKey: shortcutKey || undefined,
       };
       
       await onSave(updatedPad);
@@ -286,6 +342,8 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
     const milliseconds = Math.floor((ms % 1000) / 10);
     return `${seconds}.${milliseconds.toString().padStart(2, '0')}s`;
   };
+
+  const reservedKeysText = RESERVED_SHORTCUT_KEYS.join(', ');
 
   // Calculate effective playback duration after start/end time adjustments
   const effectiveDuration = endTimeMs[0] - startTimeMs[0];
@@ -376,6 +434,25 @@ export function PadEditDialog({ pad, allPads = [], open, onOpenChange, onSave, o
                   }
                 }}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="shortcutKey">Keyboard Shortcut</Label>
+              <Input
+                id="shortcutKey"
+                value={shortcutKey}
+                onKeyDown={handleShortcutKeyDown}
+                placeholder="Press a key"
+                readOnly
+              />
+              {shortcutError && (
+                <p className="text-xs text-red-500">{shortcutError}</p>
+              )}
+              {!shortcutError && (
+                <p className="text-xs text-gray-500">
+                  Reserved keys: {reservedKeysText}
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">

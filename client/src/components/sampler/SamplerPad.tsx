@@ -263,19 +263,21 @@ export function SamplerPad({
   };
 
   const getTriggerModeIcon = () => {
+    // Smaller icons on mobile to maximize text space
+    const iconSize = 'w-2 h-2 sm:w-3 sm:h-3';
     switch (pad.triggerMode) {
       case 'toggle':
         if (isPlaying) {
-          return <Pause className="w-3 h-3 text-blue-400" />;
+          return <Pause className={`${iconSize} text-blue-400`} />;
         } else {
-          return <Play className="w-3 h-3 text-blue-400" />;
+          return <Play className={`${iconSize} text-blue-400`} />;
         }
       case 'hold':
-        return <MousePointer2 className="w-3 h-3 text-green-400" />;
+        return <MousePointer2 className={`${iconSize} text-green-400`} />;
       case 'stutter':
-        return <Zap className="w-3 h-3 text-orange-400" />;
+        return <Zap className={`${iconSize} text-orange-400`} />;
       case 'unmute':
-        return <VolumeX className="w-3 h-3 text-purple-400" />;
+        return <VolumeX className={`${iconSize} text-purple-400`} />;
       default:
         return null;
     }
@@ -314,11 +316,11 @@ export function SamplerPad({
           ...getEditModeButtonStyle()
         }}
       >
-        {/* Drag/Transfer indicator for edit mode */}
+        {/* Drag/Transfer indicator for edit mode - smaller on mobile */}
         {editMode && (
           <div
             onClick={handleTransferClick}
-            className={`transfer-indicator absolute top-1 left-1 p-1 rounded-full transition-all hover:scale-110 z-10 ${
+            className={`transfer-indicator absolute top-0.5 left-0.5 sm:top-1 sm:left-1 p-0.5 sm:p-1 rounded-full transition-all hover:scale-110 z-10 ${
               transferableBanks.length > 0 && (!canTransferFromBank || canTransferFromBank(bankId))
                 ? 'bg-orange-500 hover:bg-orange-400 cursor-pointer'
                 : 'bg-gray-500 cursor-not-allowed'
@@ -332,21 +334,23 @@ export function SamplerPad({
             }
             style={{ pointerEvents: 'auto' }}
           >
-            <div className="w-3 h-3 grid grid-cols-2 gap-0.5">
-              <div className="w-1 h-1 bg-white rounded-full"></div>
-              <div className="w-1 h-1 bg-white rounded-full"></div>
-              <div className="w-1 h-1 bg-white rounded-full"></div>
-              <div className="w-1 h-1 bg-white rounded-full"></div>
+            <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 grid grid-cols-2 gap-0.5">
+              <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-white rounded-full"></div>
+              <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-white rounded-full"></div>
+              <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-white rounded-full"></div>
+              <div className="w-0.5 h-0.5 sm:w-1 sm:h-1 bg-white rounded-full"></div>
             </div>
           </div>
         )}
 
-        {/* Trigger Mode Indicator */}
-        <div className="absolute top-1 right-1 p-1 rounded-full bg-black bg-opacity-20 pointer-events-none">
-          {getTriggerModeIcon()}
+        {/* Trigger Mode Indicator - smaller on mobile to maximize text space */}
+        <div className="absolute top-0.5 right-0.5 sm:top-1 sm:right-1 p-0.5 sm:p-1 rounded-full bg-black bg-opacity-20 pointer-events-none z-10">
+          <div className="w-2.5 h-2.5 sm:w-3 sm:h-3 flex items-center justify-center">
+            {getTriggerModeIcon()}
+          </div>
         </div>
 
-        <div className="flex flex-col items-center justify-center h-full w-full pointer-events-none p-2 overflow-hidden">
+        <div className="flex flex-col items-center justify-center h-full w-full pointer-events-none p-0 sm:p-2 overflow-hidden">
           {shouldShowImage ? (
             <div className="relative w-full max-w-[100%] aspect-square mb-1">
               <img
@@ -358,36 +362,76 @@ export function SamplerPad({
               />
             </div>
           ) : shouldShowText ? (
-            /* UPDATED TEXT RENDERING:
-               - whitespace-normal: Allows text to wrap naturally
-               - break-words: Breaks long strings (like "KickDrum001")
-               - line-clamp-x: Limits lines to keep layout clean
-               - leading-tight: Tighter line height for better density
+            /* ENHANCED TEXT RENDERING - RESPONSIVE TO PAD SIZE:
+               - Text fills entire pad space with absolute positioning
+               - Viewport-relative font sizing for very small pads (uses clamp for min/max)
+               - Zero padding on mobile to maximize space, minimal on desktop
+               - Text scales with actual pad dimensions, not just padSize prop
+               - Maximum lines allowed based on available space
+               - Strong text shadows for readability
+               - Tighter line height for better space utilization
             */
-            <div className="w-full flex items-center justify-center mb-1 overflow-hidden">
-              <span className={`text-center font-bold leading-tight break-words whitespace-normal ${textSize} ${lineClamp} ${isPlaying
-                ? 'text-white'
-                : theme === 'dark'
-                  ? 'text-white'
-                  : 'text-gray-900'
-                }`}>
+            <div className="absolute inset-0 flex items-center justify-center px-0 py-0 sm:relative sm:px-0 sm:py-0 sm:mb-1 w-full h-full overflow-hidden">
+              <span 
+                className={`text-center font-bold leading-[1.1] break-words whitespace-normal line-clamp-4 sm:${lineClamp} ${isPlaying
+                  ? 'text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]'
+                  : theme === 'dark'
+                    ? 'text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]'
+                    : 'text-gray-900 drop-shadow-[0_2px_4px_rgba(255,255,255,0.9)]'
+                  }`}
+                style={{
+                  // Responsive font sizing that scales with viewport and pad size
+                  // Uses clamp for min/max bounds, viewport units for scaling
+                  // Minimum sizes ensure readability even on very small pads
+                  fontSize: padSize <= 6 
+                    ? 'clamp(11px, min(4.5vw, 4.5vh, 1.2em), 18px)' // Larger for small pad counts
+                    : padSize <= 10
+                      ? 'clamp(10px, min(4vw, 4vh, 1.1em), 16px)' // Medium
+                      : 'clamp(9px, min(3.5vw, 3.5vh, 1em), 14px)', // Smaller for dense grids
+                  padding: '1px 2px',
+                  maxWidth: 'calc(100% - 4px)',
+                  maxHeight: 'calc(100% - 18px)', // Reserve space for volume/progress
+                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '100%',
+                  height: '100%',
+                  boxSizing: 'border-box'
+                }}
+              >
                 {pad.name}
               </span>
             </div>
           ) : null}
 
-          <div className={`text-xs opacity-75 whitespace-nowrap ${isPlaying
-            ? 'text-white'
-            : theme === 'dark'
-              ? 'text-gray-300'
-              : 'text-gray-600'
-            }`}>
-            {Math.round((isPlaying ? effectiveVolume : pad.volume) * 100)}%
-          </div>
+          {/* Volume percentage - smaller and positioned at bottom on mobile, hidden if playing */}
+          {!isPlaying && (
+            <div 
+              className={`absolute bottom-0 right-0 sm:relative sm:bottom-0 sm:right-0 sm:px-0 sm:py-0 opacity-60 sm:opacity-75 whitespace-nowrap z-10 ${theme === 'dark'
+                ? 'text-gray-300 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]'
+                : 'text-gray-600 drop-shadow-[0_1px_2px_rgba(255,255,255,0.8)]'
+              }`}
+              style={{ fontSize: 'clamp(7px, min(2vw, 2vh), 10px)', padding: '1px 2px' }}
+            >
+              {Math.round(pad.volume * 100)}%
+            </div>
+          )}
 
+          {/* Progress bar - only show when playing, positioned at very bottom */}
           {isPlaying && (
-            <div className="w-full mt-1">
-              <Progress value={progress} className="h-1 rounded-full" />
+            <div className="absolute bottom-0 left-0 right-0 px-0 sm:relative sm:bottom-0 sm:px-0 sm:mt-1 w-full z-10">
+              <Progress value={progress} className="h-0.5 sm:h-1 rounded-full" />
+              <div 
+                className={`absolute bottom-0 right-0 opacity-75 whitespace-nowrap ${theme === 'dark'
+                  ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]'
+                  : 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]'
+                }`}
+                style={{ fontSize: 'clamp(7px, min(2vw, 2vh), 10px)', padding: '1px 2px' }}
+              >
+                {Math.round(effectiveVolume * 100)}%
+              </div>
             </div>
           )}
         </div>

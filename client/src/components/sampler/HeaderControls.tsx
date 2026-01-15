@@ -6,6 +6,7 @@ import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { createPortal } from 'react-dom'
 import { useAuth } from '@/hooks/useAuth';
 import { LoginModal } from '@/components/auth/LoginModal';
+import { AboutDialog } from '@/components/ui/about-dialog';
 
 
 interface HeaderControlsProps {
@@ -130,6 +131,7 @@ export function HeaderControls({
   const [adminDialogOpen, setAdminDialogOpen] = React.useState(false);
   const [AdminAccessDialog, setAdminAccessDialog] = React.useState<React.ComponentType<any> | null>(null);
   const [showLoginModal, setShowLoginModal] = React.useState(false);
+  const [aboutOpen, setAboutOpen] = React.useState(false);
 
   // Dynamically load AdminAccessDialog only for admin users
   React.useEffect(() => {
@@ -202,6 +204,9 @@ export function HeaderControls({
     return isMobileScreen ? 'VDJV' : 'VDJV Sampler Pad';
   };
 
+  const displayName = profile?.display_name || user?.email?.split('@')[0] || 'Guest';
+  const appVersion = (import.meta as any).env?.VITE_APP_VERSION || 'unknown';
+
   const getBankDisplayName = () => {
     if (isDualMode) {
       return `${primaryBank?.name || 'None'} | ${secondaryBank?.name || 'None'}`;
@@ -222,15 +227,23 @@ export function HeaderControls({
         multiple
         onChange={handleFileSelect}
         className="hidden"
+        id="global-audio-upload-input"
       />
 
       <header className="text-center mb-6">
         <div className="flex items-center justify-center gap-4 mb-1">
-          <img
-            src="./assets/logo.png"
-            alt="VDJV Logo"
-            className="w-12 h-12 object-contain"
-          />
+          <button
+            type="button"
+            onClick={() => setAboutOpen(true)}
+            className="rounded-full transition-transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            aria-label="About VDJV Sampler Pad"
+          >
+            <img
+              src="./assets/logo.png"
+              alt="VDJV Logo"
+              className="w-12 h-12 object-contain"
+            />
+          </button>
           <h1 className={`font-bold text-red-600 ${isMobileScreen
             ? 'text-m'
             : isMobileScreen
@@ -402,6 +415,13 @@ export function HeaderControls({
       {isAdmin && AdminAccessDialog && (
         <AdminAccessDialog open={adminDialogOpen} onOpenChange={setAdminDialogOpen} theme={theme} />
       )}
+
+      <AboutDialog
+        open={aboutOpen}
+        onOpenChange={setAboutOpen}
+        displayName={displayName}
+        version={appVersion}
+      />
 
       {/* Login Modal */}
       <LoginModal

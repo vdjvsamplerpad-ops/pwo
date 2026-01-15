@@ -22,28 +22,29 @@ async function generateElectronIcons() {
     mkdirSync(iconsDir, { recursive: true });
   }
 
-  // For Windows, electron-builder needs an .ico file
-  // ICO format requires multiple sizes embedded in one file
-  // Sharp can create ICO files with multiple sizes
-  const iconPath = join(iconsDir, 'icon.ico');
-  
-  console.log('Generating Windows icon (ico) with multiple sizes...');
-  
-  // Create ICO with multiple sizes (16, 32, 48, 64, 128, 256)
-  // Note: Sharp's ICO support may be limited, so we'll create a PNG first and convert
-  // Actually, let's create a 256x256 PNG and electron-builder will handle conversion
+  // Get source image metadata to check dimensions
+  const sourceMetadata = await sharp(sourceIcon).metadata();
+  console.log(`Source icon: ${sourceMetadata.width}x${sourceMetadata.height}`);
+
+  // For Windows, electron-builder works best with a 256x256 PNG or ICO file
+  // Create a properly sized 256x256 PNG icon
   const pngPath = join(iconsDir, 'icon.png');
   
+  console.log('Generating 256x256 PNG icon for Windows...');
+  
+  // Resize to 256x256
+  // Use 'contain' with a transparent background to preserve the full icon without cropping
+  // This ensures the entire icon is visible, centered in a 256x256 square
   await sharp(sourceIcon)
-    .resize(256, 256, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .resize(256, 256, { 
+      fit: 'contain', // Preserve entire icon, no cropping
+      background: { r: 0, g: 0, b: 0, alpha: 0 } // Transparent background
+    })
+    .png()
     .toFile(pngPath);
 
-  // Try to create ICO - Sharp may not support ICO directly, so we'll use a workaround
-  // For now, create a high-res PNG and electron-builder should be able to use it
-  // Or we can specify the icon path in the config
-  
-  console.log('✓ Electron icons generated!');
-  console.log(`  PNG: ${pngPath}`);
+  console.log('✓ Electron icon generated!');
+  console.log(`  PNG: ${pngPath} (256x256)`);
 }
 
 generateElectronIcons().catch(console.error);

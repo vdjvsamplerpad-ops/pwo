@@ -41,7 +41,7 @@ interface SideMenuProps {
   onUpdateBank: (id: string, updates: Partial<SamplerBank>) => void;
   onDeleteBank: (id: string) => void;
   onImportBank: (file: File, onProgress?: (progress: number) => void) => Promise<SamplerBank | null>;
-  onExportBank: (id: string, onProgress?: (progress: number) => void) => Promise<void>;
+  onExportBank: (id: string, onProgress?: (progress: number) => void) => Promise<string>;
   onPadSizeChange: (size: number) => void;
   onResetPadSize: () => void;
   onStopModeChange: (mode: StopMode) => void;
@@ -50,7 +50,7 @@ interface SideMenuProps {
   onMoveBankDown: (id: string) => void;
   onTransferPad: (padId: string, sourceBankId: string, targetBankId: string) => void;
   canTransferFromBank?: (bankId: string) => boolean;
-  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<string>;
 }
 
 export function SideMenu({
@@ -204,7 +204,10 @@ export function SideMenu({
   const createCompatibleFileInput = React.useCallback((): HTMLInputElement => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.bank,application/zip,application/x-zip-compressed';
+    // Android file picker is strict about MIME types
+    // Use wildcard to allow all files, then validate .bank extension in code
+    // This ensures .bank files are visible in the file picker
+    input.accept = '*/*';
     input.setAttribute('capture', 'none');
     input.setAttribute('autocomplete', 'off');
     input.setAttribute('autocorrect', 'off');
@@ -240,14 +243,14 @@ export function SideMenu({
       
       // Add timeout to detect silent failures
       const timeoutId = setTimeout(() => {
-        console.warn('⚠️ File picker timeout - no file selected within 5 seconds');
+        console.warn('⚠️ File picker timeout - no file selected within 60 seconds');
         pushNotice({ 
           variant: 'error', 
           message: 'File picker did not respond. Please try selecting the file again or use Google Drive to import.' 
         });
         compatibleInput.removeEventListener('change', handleChange);
         compatibleInput.remove();
-      }, 5000);
+      }, 60000);
 
       compatibleInput.addEventListener('change', () => clearTimeout(timeoutId), { once: true });
 
@@ -418,10 +421,14 @@ export function SideMenu({
     setExportError('');
 
     try {
-      await onExportBank(bankId, (progress) => {
+      const exportMessage = await onExportBank(bankId, (progress) => {
         setExportProgress(progress);
       });
       setExportStatus('success');
+      // Show success notification with platform-specific message
+      if (exportMessage) {
+        pushNotice({ variant: 'success', message: exportMessage });
+      }
     } catch (error) {
       console.error('Export failed:', error);
       setExportStatus('error');
@@ -697,7 +704,7 @@ export function SideMenu({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".bank,application/zip,application/x-zip-compressed"
+            accept=".bank,application/zip,application/x-zip-compressed,application/octet-stream,*/*"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -892,6 +899,8 @@ export function SideMenu({
       {editingBank && (
         <BankEditDialog
           bank={editingBank}
+          allBanks={banks}
+          allPads={banks.flatMap((bank) => bank.pads)}
           open={showEditDialog}
           onOpenChange={setShowEditDialog}
           theme={theme}

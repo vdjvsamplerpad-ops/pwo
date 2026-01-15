@@ -9,6 +9,7 @@ import { useWindowSize } from './hooks/useWindowSize';
 import { StopMode, PadData } from './types/sampler';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { isReservedShortcutKey, normalizeShortcutKey } from '@/lib/keyboard-shortcuts';
 
 // Persistence key for app settings
 const SETTINGS_STORAGE_KEY = 'vdjv-sampler-settings';
@@ -26,11 +27,11 @@ interface AppSettings {
 const defaultSettings: AppSettings = {
   masterVolume: 1,
   eqSettings: { low: 0, mid: 0, high: 0 },
-  stopMode: 'fadeout',
+  stopMode: 'brake',
   sideMenuOpen: false,
   mixerOpen: false,
   editMode: false,
-  padSize: 4
+  padSize: 5
 };
 
 export function SamplerPadApp() {
@@ -307,6 +308,144 @@ export function SamplerPadApp() {
     },
     [banks, updatePad]
   );
+
+  const shortcutMap = React.useMemo(() => {
+    const map = new Map<string, { pad: PadData; bankId: string; bankName: string }>();
+    banks.forEach((bank) => {
+      bank.pads.forEach((pad) => {
+        const normalized = pad.shortcutKey ? normalizeShortcutKey(pad.shortcutKey) : null;
+        if (normalized) {
+          map.set(normalized, { pad: { ...pad, shortcutKey: normalized }, bankId: bank.id, bankName: bank.name });
+        }
+      });
+    });
+    return map;
+  }, [banks]);
+
+  const bankShortcutMap = React.useMemo(() => {
+    const map = new Map<string, { bankId: string; bankName: string }>();
+    banks.forEach((bank) => {
+      const normalized = bank.shortcutKey ? normalizeShortcutKey(bank.shortcutKey) : null;
+      if (normalized) {
+        map.set(normalized, { bankId: bank.id, bankName: bank.name });
+      }
+    });
+    return map;
+  }, [banks]);
+
+  const ensureRegisteredAndPlay = React.useCallback(
+    (pad: PadData, bankId: string, bankName: string) => {
+      if (playbackManager.isPadRegistered(pad.id)) {
+        playbackManager.playPad(pad.id);
+        return;
+      }
+
+      playbackManager
+        .registerPad(pad.id, pad, bankId, bankName)
+        .then(() => playbackManager.playPad(pad.id))
+        .catch((error) => {
+          console.error('Failed to register pad for shortcut:', pad.id, error);
+        });
+    },
+    [playbackManager]
+  );
+
+  React.useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!target || !(target as HTMLElement).tagName) return false;
+      const element = target as HTMLElement;
+      const tagName = element.tagName.toLowerCase();
+      return (
+        tagName === 'input' ||
+        tagName === 'textarea' ||
+        tagName === 'select' ||
+        element.isContentEditable
+      );
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+
+      const normalized = normalizeShortcutKey(event.key);
+      if (!normalized) return;
+
+      if (isReservedShortcutKey(normalized)) {
+        event.preventDefault();
+        switch (normalized) {
+          case 'Space':
+            handleStopAll();
+            return;
+          case 'M':
+            handleMixerToggle(!settings.mixerOpen);
+            return;
+          case 'Z':
+            updateSetting('editMode', !settings.editMode);
+            return;
+          case 'X':
+            handleToggleMute();
+            return;
+          case 'B':
+            handleSideMenuToggle(!settings.sideMenuOpen);
+            return;
+          case 'N': {
+            const input = document.getElementById('global-audio-upload-input') as HTMLInputElement | null;
+            input?.click();
+            return;
+          }
+          case 'ArrowDown': {
+            const next = Math.max(0, Number((settings.masterVolume - 0.05).toFixed(2)));
+            updateSetting('masterVolume', next);
+            return;
+          }
+          case 'ArrowUp': {
+            const next = Math.min(1, Number((settings.masterVolume + 0.05).toFixed(2)));
+            updateSetting('masterVolume', next);
+            return;
+          }
+        }
+      }
+
+      if (event.repeat) return;
+
+      const bankShortcut = bankShortcutMap.get(normalized);
+      if (bankShortcut) {
+        event.preventDefault();
+        if (isDualMode) {
+          setPrimaryBank(bankShortcut.bankId);
+        } else {
+          setCurrentBank(bankShortcut.bankId);
+        }
+        return;
+      }
+
+      const mapped = shortcutMap.get(normalized);
+      if (mapped) {
+        event.preventDefault();
+        ensureRegisteredAndPlay(mapped.pad, mapped.bankId, mapped.bankName);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    handleMixerToggle,
+    handleSideMenuToggle,
+    handleStopAll,
+    handleToggleMute,
+    ensureRegisteredAndPlay,
+    shortcutMap,
+    bankShortcutMap,
+    settings.editMode,
+    settings.masterVolume,
+    settings.mixerOpen,
+    settings.sideMenuOpen,
+    updateSetting,
+    isDualMode,
+    setPrimaryBank,
+    setCurrentBank
+  ]);
 
   // Enhanced pad transfer handler with better dual mode support
   const handleTransferPad = React.useCallback((padId: string, sourceBankId: string, targetBankId: string) => {

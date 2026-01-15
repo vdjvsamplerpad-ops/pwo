@@ -7,18 +7,21 @@ import { Switch } from '@/components/ui/switch';
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { ProgressDialog } from '@/components/ui/progress-dialog';
 import { Trash2, Download, Crown } from 'lucide-react';
-import { SamplerBank } from './types/sampler';
+import { SamplerBank, PadData } from './types/sampler';
 import { useAuth } from '@/hooks/useAuth';
+import { isReservedShortcutKey, normalizeShortcutKey, RESERVED_SHORTCUT_KEYS } from '@/lib/keyboard-shortcuts';
 
 interface BankEditDialogProps {
   bank: SamplerBank;
+  allBanks: SamplerBank[];
+  allPads: PadData[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   theme: 'light' | 'dark';
   onSave: (updates: Partial<SamplerBank>) => void;
   onDelete: () => void;
   onExport: () => void;
-  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  onExportAdmin?: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<string>;
 }
 
 const colorOptions = [
@@ -53,10 +56,12 @@ const colorOptions = [
   { label: 'Coral', value: '#ff6600', textColor: '#ffffff' },
 ];
 
-export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDelete, onExport, onExportAdmin }: BankEditDialogProps) {
+export function BankEditDialog({ bank, allBanks, allPads, open, onOpenChange, theme, onSave, onDelete, onExport, onExportAdmin }: BankEditDialogProps) {
   const { profile } = useAuth();
   const [name, setName] = React.useState(bank.name);
   const [defaultColor, setDefaultColor] = React.useState(bank.defaultColor);
+  const [shortcutKey, setShortcutKey] = React.useState(bank.shortcutKey || '');
+  const [shortcutError, setShortcutError] = React.useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = React.useState(false);
   const [showAdminExport, setShowAdminExport] = React.useState(false);
   const [adminTitle, setAdminTitle] = React.useState(bank.name);
@@ -73,6 +78,8 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
     if (open) {
       setName(bank.name);
       setDefaultColor(bank.defaultColor);
+      setShortcutKey(bank.shortcutKey || '');
+      setShortcutError(null);
       setAdminTitle(bank.name);
       setAdminDescription('');
       setAdminTransferable(false);
@@ -82,9 +89,14 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
   }, [open, bank]);
 
   const handleSave = () => {
+    if (shortcutError) {
+      return;
+    }
+
     onSave({
       name,
       defaultColor,
+      shortcutKey: shortcutKey || undefined,
     });
   };
 
@@ -105,10 +117,12 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
     setAdminExportError('');
 
     try {
-      await onExportAdmin(bank.id, adminTitle, adminDescription, adminTransferable, adminAddToDatabase, adminAllowExport, (progress) => {
+      const exportMessage = await onExportAdmin(bank.id, adminTitle, adminDescription, adminTransferable, adminAddToDatabase, adminAllowExport, (progress) => {
         setAdminExportProgress(progress);
       });
       setAdminExportStatus('success');
+      // Store the message to show in ProgressDialog (reuse errorMessage field for success message)
+      setAdminExportError(exportMessage || '');
     } catch (error) {
       console.error('Admin export failed:', error);
       setAdminExportStatus('error');
@@ -127,6 +141,72 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
       minute: '2-digit'
     }).format(date);
   };
+
+  const applyShortcutKey = (nextKey: string | null) => {
+    if (!nextKey) {
+      setShortcutKey('');
+      setShortcutError(null);
+      return;
+    }
+
+    if (isReservedShortcutKey(nextKey)) {
+      setShortcutError(`"${nextKey}" is reserved for global controls.`);
+      return;
+    }
+
+    const duplicateBank = allBanks.find((otherBank) => {
+      if (otherBank.id === bank.id) return false;
+      const existingKey = otherBank.shortcutKey ? normalizeShortcutKey(otherBank.shortcutKey) : '';
+      return existingKey === nextKey;
+    });
+
+    if (duplicateBank) {
+      setShortcutError(`"${nextKey}" is already assigned to bank "${duplicateBank.name}".`);
+      return;
+    }
+
+    const duplicatePad = allPads.find((pad) => {
+      const existingKey = pad.shortcutKey ? normalizeShortcutKey(pad.shortcutKey) : '';
+      return existingKey === nextKey;
+    });
+
+    if (duplicatePad) {
+      setShortcutError(`"${nextKey}" is already assigned to pad "${duplicatePad.name}".`);
+      return;
+    }
+
+    setShortcutKey(nextKey);
+    setShortcutError(null);
+  };
+
+  const handleShortcutKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Tab') return;
+    event.preventDefault();
+
+    if (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Escape') {
+      applyShortcutKey(null);
+      return;
+    }
+
+    const normalized = normalizeShortcutKey(event.key);
+    if (!normalized) {
+      setShortcutError('Please press a letter or number key.');
+      return;
+    }
+
+    applyShortcutKey(normalized);
+  };
+
+  const reservedKeysText = RESERVED_SHORTCUT_KEYS.join(', ');
+
+  const shortcutAssignments = React.useMemo(() => {
+    return bank.pads
+      .map((pad) => ({
+        name: pad.name,
+        key: pad.shortcutKey ? normalizeShortcutKey(pad.shortcutKey) : null
+      }))
+      .filter((pad) => !!pad.key) as { name: string; key: string }[];
+  }, [bank.pads]);
 
   return (
     <>
@@ -183,6 +263,43 @@ export function BankEditDialog({ bank, open, onOpenChange, theme, onSave, onDele
                   }
                 }}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="bankShortcutKey">Bank Shortcut Key</Label>
+              <Input
+                id="bankShortcutKey"
+                value={shortcutKey}
+                onKeyDown={handleShortcutKeyDown}
+                placeholder="Press a key"
+                readOnly
+              />
+              {shortcutError && (
+                <p className="text-xs text-red-500">{shortcutError}</p>
+              )}
+              {!shortcutError && (
+                <p className="text-xs text-gray-500">
+                  Reserved keys: {reservedKeysText}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Keyboard Shortcuts (Pads)</Label>
+              {shortcutAssignments.length > 0 ? (
+                <div className="max-h-32 overflow-y-auto rounded border p-2 text-sm">
+                  {shortcutAssignments.map((assignment) => (
+                    <div key={`${assignment.key}-${assignment.name}`} className="flex items-center justify-between">
+                      <span className="truncate">{assignment.name}</span>
+                      <span className="ml-3 rounded bg-gray-200 px-2 py-0.5 text-xs text-gray-800 dark:bg-gray-700 dark:text-gray-100">
+                        {assignment.key}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No shortcuts assigned in this bank.</p>
+              )}
             </div>
 
             <div className="space-y-2">

@@ -4,6 +4,7 @@ export interface PadData {
   audioUrl: string;
   imageUrl?: string; // For pad image display
   imageData?: string; // Base64 encoded image data for persistence
+  shortcutKey?: string; // Optional keyboard shortcut
   color: string;
   triggerMode: 'toggle' | 'hold' | 'stutter' | 'unmute';
   playbackMode: 'once' | 'loop' | 'stopper';
@@ -23,6 +24,8 @@ export interface SamplerBank {
   pads: PadData[];
   createdAt: Date;
   sortOrder: number; // For bank ordering
+  shortcutKey?: string; // Optional keyboard shortcut for bank selection
+  shortcutKey?: string; // Optional keyboard shortcut to select bank
   // New fields for admin bank management
   isAdminBank?: boolean; // Whether this is an admin-exported bank
   transferable?: boolean; // Whether pads can be transferred from this bank

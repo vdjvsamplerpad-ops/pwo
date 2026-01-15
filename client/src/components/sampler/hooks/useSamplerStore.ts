@@ -6,6 +6,7 @@ import {
   derivePassword, 
   encryptZip, 
   decryptZip, 
+  isZipPasswordMatch,
   getDerivedKey, 
   createAdminBankWithDerivedKey, 
   addBankMetadata, 
@@ -30,7 +31,7 @@ const isNativeAndroid = (): boolean => {
 
 // Helper to save file using Capacitor Filesystem or standard download
 // Returns object with success status and message
-const saveBankFile = async (blob: Blob, fileName: string): Promise<{ success: boolean; message?: string }> => {
+const saveBankFile = async (blob: Blob, fileName: string): Promise<{ success: boolean; message?: string; savedPath?: string }> => {
   if (isNativeAndroid()) {
     try {
       // Use Capacitor Filesystem for native Android
@@ -60,7 +61,8 @@ const saveBankFile = async (blob: Blob, fileName: string): Promise<{ success: bo
       console.log(`✅ Bank saved to Documents/${fileName}`);
       return { 
         success: true, 
-        message: `Bank saved to Documents folder: ${fileName}` 
+        message: 'Successfully exported, saved to Documents',
+        savedPath: `Documents/${fileName}`
       };
     } catch (error) {
       console.error('❌ Failed to save using Capacitor Filesystem, falling back to download:', error);
@@ -69,6 +71,7 @@ const saveBankFile = async (blob: Blob, fileName: string): Promise<{ success: bo
   }
   
   // Standard web download (works for web browsers and Electron)
+  const isElectron = typeof window !== 'undefined' && window.navigator.userAgent.includes('Electron');
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -78,7 +81,13 @@ const saveBankFile = async (blob: Blob, fileName: string): Promise<{ success: bo
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
   
-  return { success: true };
+  // For web/Electron, the browser handles the save location
+  // We can't know the exact path, but we know it was saved to the selected/download location
+  return { 
+    success: true,
+    message: isElectron ? `Successfully exported in 'selected path'` : `Successfully exported in 'selected path'`,
+    savedPath: fileName
+  };
 };
 
 interface SamplerStore {
@@ -101,12 +110,12 @@ interface SamplerStore {
   updateBank: (id: string, updates: Partial<SamplerBank>) => void;
   deleteBank: (id: string) => void;
   importBank: (file: File, onProgress?: (progress: number) => void) => Promise<SamplerBank | null>;
-  exportBank: (id: string, onProgress?: (progress: number) => void) => Promise<void>;
+  exportBank: (id: string, onProgress?: (progress: number) => void) => Promise<string>;
   reorderPads: (bankId: string, fromIndex: number, toIndex: number) => void;
   moveBankUp: (id: string) => void;
   moveBankDown: (id: string) => void;
   transferPad: (padId: string, sourceBankId: string, targetBankId: string) => void;
-  exportAdminBank: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<void>;
+  exportAdminBank: (id: string, title: string, description: string, transferable: boolean, addToDatabase: boolean, allowExport: boolean, onProgress?: (progress: number) => void) => Promise<string>;
   canTransferFromBank: (bankId: string) => boolean;
 }
 
@@ -848,6 +857,7 @@ export function useSamplerStore(): SamplerStore {
       if (saveResult.message) {
         console.log('✅', saveResult.message);
       }
+      return saveResult.message || 'Bank exported successfully';
     } catch (e) { throw e; }
   }, [banks]);
 
@@ -865,10 +875,23 @@ export function useSamplerStore(): SamplerStore {
         throw new Error('Invalid file type: File must have .bank extension');
       }
       
-      // Add timeout for file reading operations (30 seconds)
-      const importTimeout = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Import timeout: Operation took too long')), 30000);
-      });
+      const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error(`${label} timeout after ${Math.round(ms / 1000)}s`)), ms);
+        });
+        try {
+          return await Promise.race([promise, timeoutPromise]);
+        } finally {
+          if (timeoutId) clearTimeout(timeoutId);
+        }
+      };
+
+      const baseTimeoutMs = 60_000;
+      const per100MbMs = 60_000;
+      const maxTimeoutMs = 10 * 60_000;
+      const sizeIn100Mb = Math.max(1, Math.ceil(file.size / (100 * 1024 * 1024)));
+      const adaptiveTimeoutMs = Math.min(maxTimeoutMs, baseTimeoutMs + (sizeIn100Mb * per100MbMs));
       
       onProgress && onProgress(10);
       
@@ -878,8 +901,7 @@ export function useSamplerStore(): SamplerStore {
       try {
         // Try to load as regular zip with timeout
         contents = await Promise.race([
-          zip.loadAsync(file),
-          importTimeout
+          withTimeout(zip.loadAsync(file), adaptiveTimeoutMs, 'Zip load')
         ]);
         console.log('✅ Bank file loaded successfully (unencrypted)');
       } catch (error) {
@@ -891,12 +913,23 @@ export function useSamplerStore(): SamplerStore {
         // First, try shared password (for banks with "Allow Export" disabled)
         // This works for all users (logged in or not) and doesn't require Supabase
         try {
-          contents = await Promise.race([
-            zip.loadAsync(await decryptZip(file, SHARED_EXPORT_DISABLED_PASSWORD)),
-            importTimeout
-          ]);
-          decrypted = true;
-          console.log('✅ Decrypted using shared password (export disabled encryption)');
+          const headerMatch = await withTimeout(
+            isZipPasswordMatch(file, SHARED_EXPORT_DISABLED_PASSWORD),
+            Math.min(adaptiveTimeoutMs, 10_000),
+            'Header check'
+          );
+          if (headerMatch) {
+            const decryptedBlob = await withTimeout(
+              decryptZip(file, SHARED_EXPORT_DISABLED_PASSWORD),
+              adaptiveTimeoutMs,
+              'Decrypt'
+            );
+            contents = await withTimeout(zip.loadAsync(decryptedBlob), adaptiveTimeoutMs, 'Zip load');
+            decrypted = true;
+            console.log('✅ Decrypted using shared password (export disabled encryption)');
+          } else {
+            throw new Error('Shared password mismatch');
+          }
         } catch (e) {
           lastError = e instanceof Error ? e : new Error(String(e));
           console.log('⚠️ Shared password decryption failed, trying user-specific keys...');
@@ -913,15 +946,20 @@ export function useSamplerStore(): SamplerStore {
           }
           
             // Try cached keys
-          for (const [cacheKey, derivedKey] of keyCache.entries()) {
+          for (const [, derivedKey] of keyCache.entries()) {
             try { 
-              contents = await Promise.race([
-                zip.loadAsync(await decryptZip(file, derivedKey)),
-                importTimeout
-              ]);
-              decrypted = true;
-              console.log('✅ Decrypted using cached key');
-              break;
+              const headerMatch = await withTimeout(
+                isZipPasswordMatch(file, derivedKey),
+                Math.min(adaptiveTimeoutMs, 10_000),
+                'Header check'
+              );
+              if (headerMatch) {
+                const decryptedBlob = await withTimeout(decryptZip(file, derivedKey), adaptiveTimeoutMs, 'Decrypt');
+                contents = await withTimeout(zip.loadAsync(decryptedBlob), adaptiveTimeoutMs, 'Zip load');
+                decrypted = true;
+                console.log('✅ Decrypted using cached key');
+                break;
+              }
             } catch (e) {
               lastError = e instanceof Error ? e : new Error(String(e));
               console.warn('Decryption attempt failed with cached key:', e);
@@ -935,12 +973,19 @@ export function useSamplerStore(): SamplerStore {
               try {
                 const d = await getDerivedKey(hintedId, effectiveUser.id);
                 if (d) {
-                  contents = await Promise.race([
-                    zip.loadAsync(await decryptZip(file, d)),
-                    importTimeout
-                  ]);
-                  decrypted = true;
-                  console.log('✅ Decrypted using hinted bank ID');
+                  const headerMatch = await withTimeout(
+                    isZipPasswordMatch(file, d),
+                    Math.min(adaptiveTimeoutMs, 10_000),
+                    'Header check'
+                  );
+                  if (headerMatch) {
+                    const decryptedBlob = await withTimeout(decryptZip(file, d), adaptiveTimeoutMs, 'Decrypt');
+                    contents = await withTimeout(zip.loadAsync(decryptedBlob), adaptiveTimeoutMs, 'Zip load');
+                    decrypted = true;
+                    console.log('✅ Decrypted using hinted bank ID');
+                  } else {
+                    throw new Error('Hinted ID password mismatch');
+                  }
                 }
               } catch (e) {
                 lastError = e instanceof Error ? e : new Error(String(e));
@@ -958,13 +1003,18 @@ export function useSamplerStore(): SamplerStore {
                 try {
                   const d = await getDerivedKey(bankId, effectiveUser.id);
                   if (d) {
-                    contents = await Promise.race([
-                      zip.loadAsync(await decryptZip(file, d)),
-                      importTimeout
-                    ]);
-                    decrypted = true;
-                    console.log('✅ Decrypted using accessible bank ID:', bankId);
-                    break;
+                    const headerMatch = await withTimeout(
+                      isZipPasswordMatch(file, d),
+                      Math.min(adaptiveTimeoutMs, 10_000),
+                      'Header check'
+                    );
+                    if (headerMatch) {
+                      const decryptedBlob = await withTimeout(decryptZip(file, d), adaptiveTimeoutMs, 'Decrypt');
+                      contents = await withTimeout(zip.loadAsync(decryptedBlob), adaptiveTimeoutMs, 'Zip load');
+                      decrypted = true;
+                      console.log('✅ Decrypted using accessible bank ID:', bankId);
+                      break;
+                    }
                   }
                 } catch (e) {
                   // Continue to next bank
@@ -993,10 +1043,11 @@ export function useSamplerStore(): SamplerStore {
       // Parse bank data with error handling
       let bankData: any;
       try {
-        const jsonString = await Promise.race([
+        const jsonString = await withTimeout(
           bankJsonFile.async('string'),
-          importTimeout
-        ]);
+          adaptiveTimeoutMs,
+          'Bank JSON load'
+        );
         bankData = JSON.parse(jsonString);
         
         if (!bankData || typeof bankData !== 'object') {
@@ -1080,10 +1131,11 @@ export function useSamplerStore(): SamplerStore {
 
              if (audioFile) {
                try {
-                 const audioBlob = await Promise.race([
-                   audioFile.async('blob'),
-                   importTimeout
-                 ]);
+                const audioBlob = await withTimeout(
+                  audioFile.async('blob'),
+                  adaptiveTimeoutMs,
+                  'Audio load'
+                );
                  
                  if (!audioBlob || audioBlob.size === 0) {
                    console.warn(`⚠️ Audio file for pad "${padData.name || padData.id}" is empty`);
@@ -1099,10 +1151,11 @@ export function useSamplerStore(): SamplerStore {
              
              if (imageFile) {
                try {
-                 const imageBlob = await Promise.race([
-                   imageFile.async('blob'),
-                   importTimeout
-                 ]);
+                const imageBlob = await withTimeout(
+                  imageFile.async('blob'),
+                  adaptiveTimeoutMs,
+                  'Image load'
+                );
                  
                  if (!imageBlob || imageBlob.size === 0) {
                    console.warn(`⚠️ Image file for pad "${padData.name || padData.id}" is empty`);
@@ -1123,6 +1176,7 @@ export function useSamplerStore(): SamplerStore {
                  audioUrl,
                  imageUrl,
                  imageData: undefined,
+                shortcutKey: padData.shortcutKey || undefined,
                  fadeInMs: padData.fadeInMs || 0,
                  fadeOutMs: padData.fadeOutMs || 0,
                  startTimeMs: padData.startTimeMs || 0,
@@ -1143,10 +1197,11 @@ export function useSamplerStore(): SamplerStore {
 
         if (batchFilesToStore.length > 0) {
           try {
-            await Promise.race([
+            await withTimeout(
               saveBatchBlobsToDB(batchFilesToStore),
-              importTimeout
-            ]);
+              adaptiveTimeoutMs,
+              'Save batch'
+            );
           } catch (e) {
             console.error('❌ Failed to save batch files to database:', e);
             throw new Error(`Failed to save files to storage: ${e instanceof Error ? e.message : String(e)}`);
@@ -1308,6 +1363,7 @@ export function useSamplerStore(): SamplerStore {
         if (saveResult.message) {
           console.log('✅', saveResult.message);
         }
+        return saveResult.message || 'Bank exported successfully';
       } else {
         // When Add to Database is disabled, use allowExport value to control export permission
         addBankMetadata(zip, { password: !allowExport, transferable, exportable: allowExport, title, description });
@@ -1325,6 +1381,8 @@ export function useSamplerStore(): SamplerStore {
           if (saveResult.message) {
             console.log('✅', saveResult.message);
           }
+          onProgress && onProgress(100);
+          return saveResult.message || 'Bank exported successfully';
         } else {
           // Unencrypted when Allow Export is enabled
           console.log('📦 Creating shareable admin bank (unencrypted, no database entry)');
@@ -1342,10 +1400,10 @@ export function useSamplerStore(): SamplerStore {
           if (saveResult.message) {
             console.log('✅', saveResult.message);
           }
+          onProgress && onProgress(100);
+          return saveResult.message || 'Bank exported successfully';
         }
       }
-      
-      onProgress && onProgress(100);
   }, [banks, user, profile]);
 
   const canTransferFromBank = React.useCallback((bankId: string): boolean => {

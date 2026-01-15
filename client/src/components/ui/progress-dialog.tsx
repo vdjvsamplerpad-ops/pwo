@@ -168,7 +168,7 @@ export function ProgressDialog({
           {status === 'success' && (
             <div className={`p-3 rounded-lg bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800`}>
               <p className="text-sm text-green-800 dark:text-green-200">
-                {type === 'export' ? 'Bank exported successfully!' : 'Bank imported successfully!'}
+                {errorMessage && status === 'success' ? errorMessage : (type === 'export' ? 'Bank exported successfully!' : 'Bank imported successfully!')}
               </p>
             </div>
           )}

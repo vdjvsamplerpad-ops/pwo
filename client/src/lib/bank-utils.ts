@@ -158,6 +158,36 @@ export async function decryptZip(encryptedBlob: Blob, password: string): Promise
 }
 
 /**
+ * Validate a password by decrypting only the ZIP header (avoids full-file decrypt)
+ */
+export async function isZipPasswordMatch(encryptedBlob: Blob, password: string): Promise<boolean> {
+  try {
+    const headerSlice = encryptedBlob.slice(0, 8);
+    const arrayBuffer = await headerSlice.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const passwordBytes = new TextEncoder().encode(password);
+
+    for (let i = 0; i < uint8Array.length; i++) {
+      uint8Array[i] ^= passwordBytes[i % passwordBytes.length];
+    }
+
+    const sig0 = uint8Array[0];
+    const sig1 = uint8Array[1];
+    const sig2 = uint8Array[2];
+    const sig3 = uint8Array[3];
+
+    const isZipSignature =
+      sig0 === 0x50 &&
+      sig1 === 0x4b &&
+      ((sig2 === 0x03 && sig3 === 0x04) || (sig2 === 0x05 && sig3 === 0x06) || (sig2 === 0x07 && sig3 === 0x08));
+
+    return isZipSignature;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Get derived key for a bank from cache or database
  * Falls back to localStorage cache when offline
  */
